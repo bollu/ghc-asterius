@@ -585,7 +585,9 @@ That is, underscores in numeric literals are ignored when
 :extension:`NumericUnderscores` is enabled.
 See also :ghc-ticket:`14473`.
 
-For example: ::
+For example:
+
+.. code-block:: none
 
     -- decimal
     million    = 1_000_000
@@ -617,7 +619,9 @@ For example: ::
 
     test8bit x = (0b01_0000_0000 .&. x) /= 0
 
-About validity: ::
+About validity:
+
+.. code-block:: none
 
     x0 = 1_000_000   -- valid
     x1 = 1__000000   -- valid
@@ -2290,6 +2294,9 @@ The following syntax is stolen:
 ``pattern``
     Stolen by: :extension:`PatternSynonyms`
 
+``static``
+    Stolen by: :extension:`StaticPointers`
+
 .. _data-type-extensions:
 
 Extensions to data types and type synonyms
@@ -2307,8 +2314,16 @@ Data types with no constructors
 
     Allow definition of empty ``data`` types.
 
-With the :extension:`EmptyDataDecls` extension, GHC
-lets you declare a data type with no constructors. For example: ::
+With the :extension:`EmptyDataDecls` extension, GHC lets you declare a
+data type with no constructors.
+
+You only need to enable this extension if the language you're using
+is Haskell 98, in which a data type must have at least one constructor.
+Haskell 2010 relaxed this rule to allow data types with no constructors,
+and thus :extension:`EmptyDataDecls` is enabled by default when the
+language is Haskell 2010.
+
+For example: ::
 
       data S      -- S :: Type
       data T a    -- T :: Type -> Type
@@ -3211,8 +3226,6 @@ Record field disambiguation
 
     :since: 6.8.1
 
-    :since: 6.8.1
-
     Allow the compiler to automatically choose between identically-named
     record selectors based on type (if the choice is unambiguous).
 
@@ -3545,10 +3558,10 @@ More details:
        module M where
          data R = R { a,b,c :: Int }
        module X where
-         import M( R(a,c) )
-         f b = R { .. }
+         import M( R(R,a,c) )
+         f a b = R { .. }
 
-   The ``R{..}`` expands to ``R{M.a=a}``, omitting ``b`` since the
+   The ``R{..}`` expands to ``R{a=a}``, omitting ``b`` since the
    record field is not in scope, and omitting ``c`` since the variable
    ``c`` is not in scope (apart from the binding of the record selector
    ``c``, of course).
@@ -4507,7 +4520,7 @@ Deriving ``Lift`` instances
 .. extension:: DeriveLift
     :shortdesc: Enable deriving for the Lift class
 
-    :since: 7.2.1
+    :since: 8.0.1
 
     Enable automatic deriving of instances for the ``Lift`` typeclass for
     Template Haskell.
@@ -7036,7 +7049,7 @@ usual: ::
 
 The class ``IsString`` is not in scope by default. If you want to
 mention it explicitly (for example, to give an instance declaration for
-it), you can import it from module ``GHC.Exts``.
+it), you can import it from module ``Data.String``.
 
 Haskell's defaulting mechanism (`Haskell Report, Section
 4.3.4 <http://www.haskell.org/onlinereport/decls.html#sect4.3.4>`__) is
@@ -7064,7 +7077,7 @@ A small example:
 
     module Main where
 
-    import GHC.Exts( IsString(..) )
+    import Data.String( IsString(..) )
 
     newtype MyString = MyString String deriving (Eq, Show)
     instance IsString MyString where
@@ -9621,7 +9634,7 @@ The following things have kind ``Constraint``:
 
 -  Anything whose form is not yet known, but the user has declared to
    have kind ``Constraint`` (for which they need to import it from
-   ``GHC.Exts``). So for example
+   ``Data.Kind``). So for example
    ``type Foo (f :: Type -> Constraint) = forall b. f b => b -> b``
    is allowed, as well as examples involving type families: ::
 
@@ -9747,7 +9760,7 @@ This idea is very old; see Seciton 7 of `Derivable type classes <https://www.mic
 Syntax changes
 ----------------
 
-`Haskell 2010 <https://www.haskell.org/onlinereport/haskell2010/haskellch10.html#x17-18000010.5>`_ defines a ``context`` (the bit to the left of ``=>`` in a type) like this ::
+`Haskell 2010 <https://www.haskell.org/onlinereport/haskell2010/haskellch10.html#x17-18000010.5>`_ defines a ``context`` (the bit to the left of ``=>`` in a type) like this
 
 .. code-block:: none
 
@@ -9757,7 +9770,7 @@ Syntax changes
     class ::= qtycls tyvar
             |  qtycls (tyvar atype1 ... atypen)
 
-We to extend ``class`` (warning: this is a rather confusingly named non-terminal symbol) with two extra forms, namely precisely what can appear in an instance declaration ::
+We to extend ``class`` (warning: this is a rather confusingly named non-terminal symbol) with two extra forms, namely precisely what can appear in an instance declaration
 
 .. code-block:: none
 
@@ -9770,9 +9783,9 @@ The ``context =>`` part is optional.  That is the only syntactic change to the l
 
 Notes:
 
-- Where GHC allows extensions instance declarations we allow exactly the same extensions to this new form of ``class``.  Specifically, with :extension:`ExplicitForAll` and :extension:`MultiParameterTypeClasses` the syntax becomes ::
+- Where GHC allows extensions instance declarations we allow exactly the same extensions to this new form of ``class``.  Specifically, with :extension:`ExplicitForAll` and :extension:`MultiParameterTypeClasses` the syntax becomes
 
-.. code-block:: none
+  .. code-block:: none
 
     class ::= ...
            | [forall tyavrs .] [context =>] qtycls inst1 ... instn
@@ -10207,8 +10220,7 @@ Lexically scoped type variables
     To trigger those forms of ``ScopedTypeVariables``, the ``forall`` must appear against the top-level signature (or outer expression)
     but *not* against nested signatures referring to the same type variables.
 
-    Explicit ``forall`` is not always required -- see :ref:`pattern signature equivalent pattern-equiv-form` for the example in this section, or :ref:`pattern-type-sigs` .
-
+    Explicit ``forall`` is not always required -- see :ref:`pattern signature equivalent <pattern-equiv-form>` for the example in this section, or :ref:`pattern-type-sigs`.
 
 GHC supports *lexically scoped type variables*, without which some type
 signatures are simply impossible to write. For example: ::
@@ -10687,6 +10699,17 @@ Here are the details:
   application. This isn't true, however! Be sure to use :ghci-cmd:`:type +v`
   if you want the most accurate information with respect to visible type
   application properties.
+
+- Although GHC supports visible *type* applications, it does not yet support
+  visible *kind* applications. However, GHC does follow similar rules for
+  quantifying variables in kind signatures as it does for quantifying type
+  signatures. For instance: ::
+
+    type family F (a :: j) (b :: k) :: l
+      -- F :: forall j k l. j -> k -> l
+
+  In the kind of ``F``, the left-to-right ordering of ``j``, ``k``, and ``l``
+  is preserved.
 
 .. _implicit-parameters:
 
@@ -14801,19 +14824,6 @@ to be called at type ``T``:
 However, sometimes there are no such calls, in which case the pragma can
 be useful.
 
-Obsolete ``SPECIALIZE`` syntax
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-In earlier versions of GHC, it was possible to provide your own
-specialised function for a given type:
-
-::
-
-    {-# SPECIALIZE hammeredLookup :: [(Int, value)] -> Int -> value = intLookup #-}
-
-This feature has been removed, as it is now subsumed by the ``RULES``
-pragma (see :ref:`rule-spec`).
-
 .. _specialize-instance-pragma:
 
 ``SPECIALIZE`` instance pragma
@@ -15330,7 +15340,7 @@ The solution is to define the instance-specific function yourself, with
 a pragma to prevent it being inlined too early, and give a RULE for it: ::
 
     instance C Bool where
-      op x y = opBool
+      op = opBool
 
     opBool :: Bool -> Bool -> Bool
     {-# NOINLINE [1] opBool #-}

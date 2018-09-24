@@ -156,6 +156,9 @@ data PmPat :: PatTy -> * where
   PmGrd  :: { pm_grd_pv   :: PatVec
             , pm_grd_expr :: PmExpr  } -> PmPat 'PAT
 
+instance Outputable (PmPat a) where
+  ppr = pprPmPatDebug
+
 -- data T a where
 --     MkT :: forall p q. (Eq p, Ord q) => p -> q -> T [p]
 -- or  MkT :: forall p q r. (Eq p, Ord q, [p] ~ r) => p -> q -> T r
@@ -426,28 +429,25 @@ checkMatches' vars matches
 --   for details.
 checkEmptyCase' :: Id -> PmM PmResult
 checkEmptyCase' var = do
-  (tm_css, ty_css) <- pmInitialTmTyCs
-  fam_insts        <- liftD dsGetFamInstEnvs
-  mb_candidates    <- inhabitationCandidates fam_insts (idType var)
+  tm_ty_css     <- pmInitialTmTyCs
+  fam_insts     <- liftD dsGetFamInstEnvs
+  mb_candidates <- inhabitationCandidates fam_insts (idType var)
   case mb_candidates of
     -- Inhabitation checking failed / the type is trivially inhabited
     Left ty -> return (uncoveredWithTy ty)
 
     -- A list of inhabitant candidates is available: Check for each
     -- one for the satisfiability of the constraints it gives rise to.
-    Right candidates -> do
-      missing_m <- flip concatMapM candidates $ \(va,tm_ct,ty_cs) -> do
-        mb_sat <- pmIsSatisfiable tm_ct tm_css ty_cs ty_css
-        pure $ case mb_sat of
-                Just (tm_state', all_ty_cs)
-                        -> [(va, all_ty_cs, tm_state')]
-                Nothing -> []
-      let mkValVec (va,all_ty_cs,tm_state')
-            = ValVec [va] (MkDelta all_ty_cs tm_state')
-          uncovered = UncoveredPatterns (map mkValVec missing_m)
+    Right (_, candidates) -> do
+      missing_m <- flip mapMaybeM candidates $
+          \InhabitationCandidate{ ic_val_abs = va, ic_tm_ct = tm_ct
+                                , ic_ty_cs = ty_cs
+                                , ic_strict_arg_tys = strict_arg_tys } -> do
+        mb_sat <- pmIsSatisfiable tm_ty_css tm_ct ty_cs strict_arg_tys
+        pure $ fmap (ValVec [va]) mb_sat
       return $ if null missing_m
         then emptyPmResult
-        else PmResult FromBuiltin [] uncovered []
+        else PmResult FromBuiltin [] (UncoveredPatterns missing_m) []
 
 -- | Returns 'True' if the argument 'Type' is a fully saturated application of
 -- a closed type constructor.
@@ -545,14 +545,14 @@ pmTopNormaliseType_maybe env typ
 -- use an empty set in its place. (See
 -- @Note [Recovering from unsatisfiable pattern-matching constraints]@
 -- for why this is done.)
-pmInitialTmTyCs :: PmM (TmState, Bag EvVar)
+pmInitialTmTyCs :: PmM Delta
 pmInitialTmTyCs = do
   ty_cs  <- liftD getDictsDs
   tm_cs  <- map toComplex . bagToList <$> liftD getTmCsDs
   sat_ty <- tyOracle ty_cs
   let initTyCs = if sat_ty then ty_cs else emptyBag
       initTmState = fromMaybe initialTmState (tmOracle initialTmState tm_cs)
-  pure (initTmState, initTyCs)
+  pure $ MkDelta{ delta_tm_cs = initTmState, delta_ty_cs = initTyCs }
 
 {-
 Note [Recovering from unsatisfiable pattern-matching constraints]
@@ -574,7 +574,8 @@ afresh with an empty set of constraints. This way, we'll get the warnings
 that we expect.
 -}
 
--- | Given some term and type constraints, check if they are satisfiable.
+-- | Given a conlike's term constraints, type constraints, and strict argument
+-- types, check if they are satisfiable.
 -- (In other words, this is the ⊢_Sat oracle judgment from the GADTs Meet
 -- Their Match paper.)
 --
@@ -588,23 +589,135 @@ that we expect.
 -- * Since the new term constraint is a separate argument, we only need to
 --   execute one iteration of the term oracle (instead of traversing the
 --   entire set of term constraints).
+--
+-- Taking strict argument types into account is something which was not
+-- discussed in GADTs Meet Their Match. For an explanation of what role they
+-- serve, see @Note [Extensions to GADTs Meet Their Match]@.
 pmIsSatisfiable
-  :: ComplexEq -- ^ The new term constraint.
-  -> TmState   -- ^ The ambient term constraints (known to be satisfiable).
+  :: Delta     -- ^ The ambient term and type constraints
+               --   (known to be satisfiable).
+  -> ComplexEq -- ^ The new term constraint.
   -> Bag EvVar -- ^ The new type constraints.
-  -> Bag EvVar -- ^ The ambient type constraints (known to be satisfiable).
-  -> PmM (Maybe (TmState, Bag EvVar))
-               -- ^ @'Just' (term_cs, ty_cs)@ if the constraints are
-               -- satisfiable, where @term_cs@ and @ty_cs@ are the new sets of
-               -- term and type constraints, respectively. 'Nothing' otherwise.
-pmIsSatisfiable new_term_c amb_term_cs new_ty_cs amb_ty_cs = do
+  -> [Type]    -- ^ The strict argument types.
+  -> PmM (Maybe Delta)
+               -- ^ @'Just' delta@ if the constraints (@delta@) are
+               -- satisfiable, and each strict argument type is inhabitable.
+               -- 'Nothing' otherwise.
+pmIsSatisfiable amb_cs new_tm_c new_ty_cs strict_arg_tys = do
+  mb_sat <- tmTyCsAreSatisfiable amb_cs new_tm_c new_ty_cs
+  case mb_sat of
+    Nothing -> pure Nothing
+    Just delta -> do
+      -- We know that the term and type constraints are inhabitable, so now
+      -- check if each strict argument type is inhabitable.
+      all_non_void <- checkAllNonVoid initRecTc delta strict_arg_tys
+      pure $ if all_non_void -- Check if each strict argument type
+                             -- is inhabitable
+                then Just delta
+                else Nothing
+
+-- | Like 'pmIsSatisfiable', but only checks if term and type constraints are
+-- satisfiable, and doesn't bother checking anything related to strict argument
+-- types.
+tmTyCsAreSatisfiable
+  :: Delta     -- ^ The ambient term and type constraints
+               --   (known to be satisfiable).
+  -> ComplexEq -- ^ The new term constraint.
+  -> Bag EvVar -- ^ The new type constraints.
+  -> PmM (Maybe Delta)
+       -- ^ @'Just' delta@ if the constraints (@delta@) are
+       -- satisfiable. 'Nothing' otherwise.
+tmTyCsAreSatisfiable
+    (MkDelta{ delta_tm_cs = amb_tm_cs, delta_ty_cs = amb_ty_cs })
+    new_tm_c new_ty_cs = do
   let ty_cs = new_ty_cs `unionBags` amb_ty_cs
   sat_ty <- if isEmptyBag new_ty_cs
                then pure True
                else tyOracle ty_cs
-  pure $ case (sat_ty, solveOneEq amb_term_cs new_term_c) of
-           (True, Just term_cs) -> Just (term_cs, ty_cs)
+  pure $ case (sat_ty, solveOneEq amb_tm_cs new_tm_c) of
+           (True, Just term_cs) -> Just $ MkDelta{ delta_ty_cs = ty_cs
+                                                 , delta_tm_cs = term_cs }
            _unsat               -> Nothing
+
+-- | Implements two performance optimizations, as described in the
+-- \"Strict argument type constraints\" section of
+-- @Note [Extensions to GADTs Meet Their Match]@.
+checkAllNonVoid :: RecTcChecker -> Delta -> [Type] -> PmM Bool
+checkAllNonVoid rec_ts amb_cs strict_arg_tys = do
+  fam_insts <- liftD dsGetFamInstEnvs
+  let tys_to_check = filterOut (definitelyInhabitedType fam_insts)
+                               strict_arg_tys
+      rec_max_bound | tys_to_check `lengthExceeds` 1
+                    = 1
+                    | otherwise
+                    = defaultRecTcMaxBound
+      rec_ts' = setRecTcMaxBound rec_max_bound rec_ts
+  allM (nonVoid rec_ts' amb_cs) tys_to_check
+
+-- | Checks if a strict argument type of a conlike is inhabitable by a
+-- terminating value (i.e, an 'InhabitationCandidate').
+-- See @Note [Extensions to GADTs Meet Their Match]@.
+nonVoid
+  :: RecTcChecker -- ^ The per-'TyCon' recursion depth limit.
+  -> Delta        -- ^ The ambient term/type constraints (known to be
+                  --   satisfiable).
+  -> Type         -- ^ The strict argument type.
+  -> PmM Bool     -- ^ 'True' if the strict argument type might be inhabited by
+                  --   a terminating value (i.e., an 'InhabitationCandidate').
+                  --   'False' if it is definitely uninhabitable by anything
+                  --   (except bottom).
+nonVoid rec_ts amb_cs strict_arg_ty = do
+  fam_insts <- liftD dsGetFamInstEnvs
+  mb_cands <- inhabitationCandidates fam_insts strict_arg_ty
+  case mb_cands of
+    Right (tc, cands)
+      |  Just rec_ts' <- checkRecTc rec_ts tc
+      -> anyM (cand_is_inhabitable rec_ts' amb_cs) cands
+           -- A strict argument type is inhabitable by a terminating value if
+           -- at least one InhabitationCandidate is inhabitable.
+    _ -> pure True
+           -- Either the type is trivially inhabited or we have exceeded the
+           -- recursion depth for some TyCon (so bail out and conservatively
+           -- claim the type is inhabited).
+  where
+    -- Checks if an InhabitationCandidate for a strict argument type:
+    --
+    -- (1) Has satisfiable term and type constraints.
+    -- (2) Has 'nonVoid' strict argument types (we bail out of this
+    --     check if recursion is detected).
+    --
+    -- See Note [Extensions to GADTs Meet Their Match]
+    cand_is_inhabitable :: RecTcChecker -> Delta
+                        -> InhabitationCandidate -> PmM Bool
+    cand_is_inhabitable rec_ts amb_cs
+      (InhabitationCandidate{ ic_tm_ct          = new_term_c
+                            , ic_ty_cs          = new_ty_cs
+                            , ic_strict_arg_tys = new_strict_arg_tys }) = do
+        mb_sat <- tmTyCsAreSatisfiable amb_cs new_term_c new_ty_cs
+        case mb_sat of
+          Nothing -> pure False
+          Just new_delta -> do
+            checkAllNonVoid rec_ts new_delta new_strict_arg_tys
+
+-- | @'definitelyInhabitedType' ty@ returns 'True' if @ty@ has at least one
+-- constructor @C@ such that:
+--
+-- 1. @C@ has no equality constraints.
+-- 2. @C@ has no strict argument types.
+--
+-- See the \"Strict argument type constraints\" section of
+-- @Note [Extensions to GADTs Meet Their Match]@.
+definitelyInhabitedType :: FamInstEnvs -> Type -> Bool
+definitelyInhabitedType env ty
+  | Just (_, cons, _) <- pmTopNormaliseType_maybe env ty
+  = any meets_criteria cons
+  | otherwise
+  = False
+  where
+    meets_criteria :: DataCon -> Bool
+    meets_criteria con =
+      null (dataConEqSpec con) && -- (1)
+      null (dataConImplBangs con) -- (2)
 
 {- Note [Type normalisation for EmptyCase]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -657,14 +770,14 @@ Which means that in source Haskell:
   - if (x : R:TInt) then (MkG2 (MkG1 x) : F Int).
 -}
 
--- | Generate all inhabitation candidates for a given type. The result is
--- either (Left ty), if the type cannot be reduced to a closed algebraic type
--- (or if it's one trivially inhabited, like Int), or (Right candidates), if it
--- can. In this case, the candidates are the signature of the tycon, each one
--- accompanied by the term- and type- constraints it gives rise to.
+-- | Generate all 'InhabitationCandidate's for a given type. The result is
+-- either @'Left' ty@, if the type cannot be reduced to a closed algebraic type
+-- (or if it's one trivially inhabited, like 'Int'), or @'Right' candidates@,
+-- if it can. In this case, the candidates are the signature of the tycon, each
+-- one accompanied by the term- and type- constraints it gives rise to.
 -- See also Note [Checking EmptyCase Expressions]
 inhabitationCandidates :: FamInstEnvs -> Type
-                       -> PmM (Either Type [(ValAbs, ComplexEq, Bag EvVar)])
+                       -> PmM (Either Type (TyCon, [InhabitationCandidate]))
 inhabitationCandidates fam_insts ty
   = case pmTopNormaliseType_maybe fam_insts ty of
       Just (src_ty, dcs, core_ty) -> alts_to_check src_ty core_ty dcs
@@ -682,19 +795,28 @@ inhabitationCandidates fam_insts ty
 
     -- Inhabitation candidates, using the result of pmTopNormaliseType_maybe
     alts_to_check :: Type -> Type -> [DataCon]
-                  -> PmM (Either Type [(ValAbs, ComplexEq, Bag EvVar)])
+                  -> PmM (Either Type (TyCon, [InhabitationCandidate]))
     alts_to_check src_ty core_ty dcs = case splitTyConApp_maybe core_ty of
       Just (tc, _)
-        | tc `elem` trivially_inhabited -> case dcs of
-            []    -> return (Left src_ty)
-            (_:_) -> do var <- liftD $ mkPmId core_ty
-                        let va = build_tm (PmVar var) dcs
-                        return $ Right [(va, mkIdEq var, emptyBag)]
+        |  tc `elem` trivially_inhabited
+        -> case dcs of
+             []    -> return (Left src_ty)
+             (_:_) -> do var <- liftD $ mkPmId core_ty
+                         let va = build_tm (PmVar var) dcs
+                         return $ Right (tc, [InhabitationCandidate
+                           { ic_val_abs = va, ic_tm_ct = mkIdEq var
+                           , ic_ty_cs = emptyBag, ic_strict_arg_tys = [] }])
 
-        | pmIsClosedType core_ty -> liftD $ do
-            var  <- mkPmId core_ty -- it would be wrong to unify x
-            alts <- mapM (mkOneConFull var . RealDataCon) (tyConDataCons tc)
-            return $ Right [(build_tm va dcs, eq, cs) | (va, eq, cs) <- alts]
+        |  pmIsClosedType core_ty && not (isAbstractTyCon tc)
+           -- Don't consider abstract tycons since we don't know what their
+           -- constructors are, which makes the results of coverage checking
+           -- them extremely misleading.
+        -> liftD $ do
+             var  <- mkPmId core_ty -- it would be wrong to unify x
+             alts <- mapM (mkOneConFull var . RealDataCon) (tyConDataCons tc)
+             return $ Right
+               (tc, [ alt{ic_val_abs = build_tm (ic_val_abs alt) dcs}
+                    | alt <- alts ])
       -- For other types conservatively assume that they are inhabited.
       _other -> return (Left src_ty)
 
@@ -1284,9 +1406,168 @@ pmPatType (PmGrd  { pm_grd_pv  = pv })
   = ASSERT(patVecArity pv == 1) (pmPatType p)
   where Just p = find ((==1) . patternArity) pv
 
--- | Generate a value abstraction for a given constructor (generate
+-- | Information about a conlike that is relevant to coverage checking.
+-- It is called an \"inhabitation candidate\" since it is a value which may
+-- possibly inhabit some type, but only if its term constraint ('ic_tm_ct')
+-- and type constraints ('ic_ty_cs') are permitting, and if all of its strict
+-- argument types ('ic_strict_arg_tys') are inhabitable.
+-- See @Note [Extensions to GADTs Meet Their Match]@.
+data InhabitationCandidate =
+  InhabitationCandidate
+  { ic_val_abs        :: ValAbs
+  , ic_tm_ct          :: ComplexEq
+  , ic_ty_cs          :: Bag EvVar
+  , ic_strict_arg_tys :: [Type]
+  }
+
+{-
+Note [Extensions to GADTs Meet Their Match]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The GADTs Meet Their Match paper presents the formalism that GHC's coverage
+checker adheres to. Since the paper's publication, there have been some
+additional features added to the coverage checker which are not described in
+the paper. This Note serves as a reference for these new features.
+
+-----
+-- Strict argument type constraints
+-----
+
+In the ConVar case of clause processing, each conlike K traditionally
+generates two different forms of constraints:
+
+* A term constraint (e.g., x ~ K y1 ... yn)
+* Type constraints from the conlike's context (e.g., if K has type
+  forall bs. Q => s1 .. sn -> T tys, then Q would be its type constraints)
+
+As it turns out, these alone are not enough to detect a certain class of
+unreachable code. Consider the following example (adapted from #15305):
+
+  data K = K1 | K2 !Void
+
+  f :: K -> ()
+  f K1 = ()
+
+Even though `f` doesn't match on `K2`, `f` is exhaustive in its patterns. Why?
+Because it's impossible to construct a terminating value of type `K` using the
+`K2` constructor, and thus it's impossible for `f` to ever successfully match
+on `K2`.
+
+The reason is because `K2`'s field of type `Void` is //strict//. Because there
+are no terminating values of type `Void`, any attempt to construct something
+using `K2` will immediately loop infinitely or throw an exception due to the
+strictness annotation. (If the field were not strict, then `f` could match on,
+say, `K2 undefined` or `K2 (let x = x in x)`.)
+
+Since neither the term nor type constraints mentioned above take strict
+argument types into account, we make use of the `nonVoid` function to
+determine whether a strict type is inhabitable by a terminating value or not.
+
+`nonVoid ty` returns True when either:
+1. `ty` has at least one InhabitationCandidate for which both its term and type
+   constraints are satifiable, and `nonVoid` returns `True` for all of the
+   strict argument types in that InhabitationCandidate.
+2. We're unsure if it's inhabited by a terminating value.
+
+`nonVoid ty` returns False when `ty` is definitely uninhabited by anything
+(except bottom). Some examples:
+
+* `nonVoid Void` returns False, since Void has no InhabitationCandidates.
+  (This is what lets us discard the `K2` constructor in the earlier example.)
+* `nonVoid (Int :~: Int)` returns True, since it has an InhabitationCandidate
+  (through the Refl constructor), and its term constraint (x ~ Refl) and
+  type constraint (Int ~ Int) are satisfiable.
+* `nonVoid (Int :~: Bool)` returns False. Although it has an
+  InhabitationCandidate (by way of Refl), its type constraint (Int ~ Bool) is
+  not satisfiable.
+* Given the following definition of `MyVoid`:
+
+    data MyVoid = MkMyVoid !Void
+
+  `nonVoid MyVoid` returns False. The InhabitationCandidate for the MkMyVoid
+  constructor contains Void as a strict argument type, and since `nonVoid Void`
+  returns False, that InhabitationCandidate is discarded, leaving no others.
+
+* Performance considerations
+
+We must be careful when recursively calling `nonVoid` on the strict argument
+types of an InhabitationCandidate, because doing so naïvely can cause GHC to
+fall into an infinite loop. Consider the following example:
+
+  data Abyss = MkAbyss !Abyss
+
+  stareIntoTheAbyss :: Abyss -> a
+  stareIntoTheAbyss x = case x of {}
+
+In principle, stareIntoTheAbyss is exhaustive, since there is no way to
+construct a terminating value using MkAbyss. However, both the term and type
+constraints for MkAbyss are satisfiable, so the only way one could determine
+that MkAbyss is unreachable is to check if `nonVoid Abyss` returns False.
+There is only one InhabitationCandidate for Abyss—MkAbyss—and both its term
+and type constraints are satisfiable, so we'd need to check if `nonVoid Abyss`
+returns False... and now we've entered an infinite loop!
+
+To avoid this sort of conundrum, `nonVoid` uses a simple test to detect the
+presence of recursive types (through `checkRecTc`), and if recursion is
+detected, we bail out and conservatively assume that the type is inhabited by
+some terminating value. This avoids infinite loops at the expense of making
+the coverage checker incomplete with respect to functions like
+stareIntoTheAbyss above. Then again, the same problem occurs with recursive
+newtypes, like in the following code:
+
+  newtype Chasm = MkChasm Chasm
+
+  gazeIntoTheChasm :: Chasm -> a
+  gazeIntoTheChasm x = case x of {} -- Erroneously warned as non-exhaustive
+
+So this limitation is somewhat understandable.
+
+Note that even with this recursion detection, there is still a possibility that
+`nonVoid` can run in exponential time. Consider the following data type:
+
+  data T = MkT !T !T !T
+
+If we call `nonVoid` on each of its fields, that will require us to once again
+check if `MkT` is inhabitable in each of those three fields, which in turn will
+require us to check if `MkT` is inhabitable again... As you can see, the
+branching factor adds up quickly, and if the recursion depth limit is, say,
+100, then `nonVoid T` will effectively take forever.
+
+To mitigate this, we check the branching factor every time we are about to call
+`nonVoid` on a list of strict argument types. If the branching factor exceeds 1
+(i.e., if there is potential for exponential runtime), then we limit the
+maximum recursion depth to 1 to mitigate the problem. If the branching factor
+is exactly 1 (i.e., we have a linear chain instead of a tree), then it's okay
+to stick with a larger maximum recursion depth.
+
+Another microoptimization applies to data types like this one:
+
+  data S a = ![a] !T
+
+Even though there is a strict field of type [a], it's quite silly to call
+nonVoid on it, since it's "obvious" that it is inhabitable. To make this
+intuition formal, we say that a type is definitely inhabitable (DI) if:
+
+  * It has at least one constructor C such that:
+    1. C has no equality constraints (since they might be unsatisfiable)
+    2. C has no strict argument types (since they might be uninhabitable)
+
+It's relatively cheap to cheap if a type is DI, so before we call `nonVoid`
+on a list of strict argument types, we filter out all of the DI ones.
+-}
+
+instance Outputable InhabitationCandidate where
+  ppr (InhabitationCandidate { ic_val_abs = va, ic_tm_ct = tm_ct
+                             , ic_ty_cs = ty_cs
+                             , ic_strict_arg_tys = strict_arg_tys }) =
+    text "InhabitationCandidate" <+>
+      vcat [ text "ic_val_abs        =" <+> ppr va
+           , text "ic_tm_ct          =" <+> ppr tm_ct
+           , text "ic_ty_cs          =" <+> ppr ty_cs
+           , text "ic_strict_arg_tys =" <+> ppr strict_arg_tys ]
+
+-- | Generate an 'InhabitationCandidate' for a given conlike (generate
 -- fresh variables of the appropriate type for arguments)
-mkOneConFull :: Id -> ConLike -> DsM (ValAbs, ComplexEq, Bag EvVar)
+mkOneConFull :: Id -> ConLike -> DsM InhabitationCandidate
 --  *  x :: T tys, where T is an algebraic data type
 --     NB: in the case of a data family, T is the *representation* TyCon
 --     e.g.   data instance T (a,b) = T1 a b
@@ -1294,18 +1575,21 @@ mkOneConFull :: Id -> ConLike -> DsM (ValAbs, ComplexEq, Bag EvVar)
 --            data TPair a b = T1 a b  -- The "representation" type
 --       It is TPair, not T, that is given to mkOneConFull
 --
---  * 'con' K is a constructor of data type T
+--  * 'con' K is a conlike of data type T
 --
 -- After instantiating the universal tyvars of K we get
 --          K tys :: forall bs. Q => s1 .. sn -> T tys
 --
--- Results: ValAbs:          K (y1::s1) .. (yn::sn)
---          ComplexEq:       x ~ K y1..yn
---          [EvVar]:         Q
+-- Suppose y1 is a strict field. Then we get
+-- Results: ic_val_abs:        K (y1::s1) .. (yn::sn)
+--          ic_tm_ct:          x ~ K y1..yn
+--          ic_ty_cs:          Q
+--          ic_strict_arg_tys: [s1]
 mkOneConFull x con = do
   let res_ty  = idType x
       (univ_tvs, ex_tvs, eq_spec, thetas, _req_theta , arg_tys, con_res_ty)
         = conLikeFullSig con
+      arg_is_banged = map isBanged $ conLikeImplBangs con
       tc_args = tyConAppArgs res_ty
       subst1  = case con of
                   RealDataCon {} -> zipTvSubst univ_tvs tc_args
@@ -1314,8 +1598,9 @@ mkOneConFull x con = do
 
   (subst, ex_tvs') <- cloneTyVarBndrs subst1 ex_tvs <$> getUniqueSupplyM
 
+  let arg_tys' = substTys subst arg_tys
   -- Fresh term variables (VAs) as arguments to the constructor
-  arguments <-  mapM mkPmVar (substTys subst arg_tys)
+  arguments <-  mapM mkPmVar arg_tys'
   -- All constraints bound by the constructor (alpha-renamed)
   let theta_cs = substTheta subst (eqSpecPreds eq_spec ++ thetas)
   evvars <- mapM (nameType "pm") theta_cs
@@ -1324,7 +1609,13 @@ mkOneConFull x con = do
                        , pm_con_tvs     = ex_tvs'
                        , pm_con_dicts   = evvars
                        , pm_con_args    = arguments }
-  return (con_abs, (PmExprVar (idName x), vaToPmExpr con_abs), listToBag evvars)
+      strict_arg_tys = filterByList arg_is_banged arg_tys'
+  return $ InhabitationCandidate
+           { ic_val_abs        = con_abs
+           , ic_tm_ct          = (PmExprVar (idName x), vaToPmExpr con_abs)
+           , ic_ty_cs          = listToBag evvars
+           , ic_strict_arg_tys = strict_arg_tys
+           }
 
 -- ----------------------------------------------------------------------------
 -- * More smart constructors and fresh variable generation
@@ -1607,9 +1898,9 @@ runMany pm (m:ms) = mappend <$> pm m <*> runMany pm ms
 -- delta with all term and type constraints in scope.
 mkInitialUncovered :: [Id] -> PmM Uncovered
 mkInitialUncovered vars = do
-  (initTmState, initTyCs) <- pmInitialTmTyCs
+  delta <- pmInitialTmTyCs
   let patterns = map PmVar vars
-  return [ValVec patterns (MkDelta initTyCs initTmState)]
+  return [ValVec patterns delta]
 
 -- | Increase the counter for elapsed algorithm iterations, check that the
 -- limit is not exceeded and call `pmcheck`
@@ -1736,13 +2027,12 @@ pmcheckHd (p@(PmCon { pm_con_con = con, pm_con_arg_tys = tys }))
 
   cons_cs <- mapM (liftD . mkOneConFull x) complete_match
 
-  inst_vsa <- flip concatMapM cons_cs $ \(va, tm_ct, ty_cs) -> do
-    mb_sat <- pmIsSatisfiable tm_ct (delta_tm_cs delta)
-                              ty_cs (delta_ty_cs delta)
-    pure $ case mb_sat of
-             Just (tm_state, ty_state)
-                     -> [ValVec (va:vva) (MkDelta ty_state tm_state)]
-             Nothing -> []
+  inst_vsa <- flip mapMaybeM cons_cs $
+      \InhabitationCandidate{ ic_val_abs = va, ic_tm_ct = tm_ct
+                            , ic_ty_cs = ty_cs
+                            , ic_strict_arg_tys = strict_arg_tys } -> do
+    mb_sat <- pmIsSatisfiable delta tm_ct ty_cs strict_arg_tys
+    pure $ fmap (ValVec (va:vva)) mb_sat
 
   set_provenance prov .
     force_if (canDiverge (idName x) (delta_tm_cs delta)) <$>

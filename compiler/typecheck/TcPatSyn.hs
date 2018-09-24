@@ -17,14 +17,13 @@ import GhcPrelude
 
 import HsSyn
 import TcPat
-import Type( mkEmptyTCvSubst, tidyTyVarBinders, tidyTypes, tidyType )
+import Type( mkEmptyTCvSubst, tidyTyCoVarBinders, tidyTypes, tidyType )
 import TcRnMonad
 import TcSigs( emptyPragEnv, completeSigFromId )
 import TcType( mkMinimalBySCs )
 import TcEnv
 import TcMType
-import TcHsSyn( zonkTyVarBindersX, zonkTcTypeToTypes
-              , zonkTcTypeToType, emptyZonkEnv )
+import TcHsSyn
 import TysPrim
 import TysWiredIn  ( runtimeRepTy )
 import Name
@@ -612,15 +611,15 @@ tc_patsyn_finish lname dir is_infix lpat'
   = do { -- Zonk everything.  We are about to build a final PatSyn
          -- so there had better be no unification variables in there
 
-         (ze, univ_tvs') <- zonkTyVarBindersX emptyZonkEnv univ_tvs
-       ; req_theta'      <- zonkTcTypeToTypes ze req_theta
+         (ze, univ_tvs') <- zonkTyVarBinders univ_tvs
+       ; req_theta'      <- zonkTcTypesToTypesX ze req_theta
        ; (ze, ex_tvs')   <- zonkTyVarBindersX ze ex_tvs
-       ; prov_theta'     <- zonkTcTypeToTypes ze prov_theta
-       ; pat_ty'         <- zonkTcTypeToType ze pat_ty
-       ; arg_tys'        <- zonkTcTypeToTypes ze arg_tys
+       ; prov_theta'     <- zonkTcTypesToTypesX ze prov_theta
+       ; pat_ty'         <- zonkTcTypeToTypeX ze pat_ty
+       ; arg_tys'        <- zonkTcTypesToTypesX ze arg_tys
 
-       ; let (env1, univ_tvs) = tidyTyVarBinders emptyTidyEnv univ_tvs'
-             (env2, ex_tvs)   = tidyTyVarBinders env1 ex_tvs'
+       ; let (env1, univ_tvs) = tidyTyCoVarBinders emptyTidyEnv univ_tvs'
+             (env2, ex_tvs)   = tidyTyCoVarBinders env1 ex_tvs'
              req_theta  = tidyTypes env2 req_theta'
              prov_theta = tidyTypes env2 prov_theta'
              arg_tys    = tidyTypes env2 arg_tys'
@@ -718,7 +717,7 @@ tcPatSynMatcher (L loc name) lpat
                              -- See Note [Exported LocalIds] in Id
 
              inst_wrap = mkWpEvApps prov_dicts <.> mkWpTyApps ex_tys
-             cont' = foldl nlHsApp (mkLHsWrap inst_wrap (nlHsVar cont)) cont_args
+             cont' = foldl' nlHsApp (mkLHsWrap inst_wrap (nlHsVar cont)) cont_args
 
              fail' = nlHsApps fail [nlHsVar voidPrimId]
 
@@ -926,8 +925,8 @@ tcPatToExpr name args pat = go pat
                     -> Either MsgDoc (HsExpr GhcRn)
     mkPrefixConExpr lcon@(L loc _) pats
       = do { exprs <- mapM go pats
-           ; return (foldl (\x y -> HsApp noExt (L loc x) y)
-                           (HsVar noExt lcon) exprs) }
+           ; return (foldl' (\x y -> HsApp noExt (L loc x) y)
+                            (HsVar noExt lcon) exprs) }
 
     mkRecordConExpr :: Located Name -> HsRecFields GhcRn (LPat GhcRn)
                     -> Either MsgDoc (HsExpr GhcRn)

@@ -24,7 +24,7 @@ module TcMType (
   cloneMetaTyVar,
   newFmvTyVar, newFskTyVar,
 
-  readMetaTyVar, writeMetaTyVar,
+  readMetaTyVar, writeMetaTyVar, writeMetaTyVarRef,
   newMetaDetails, isFilledMetaTyVar, isUnfilledMetaTyVar,
 
   --------------------------------
@@ -63,8 +63,7 @@ module TcMType (
   -- Zonking and tidying
   zonkTidyTcType, zonkTidyTcTypes, zonkTidyOrigin,
   tidyEvVar, tidyCt, tidySkolemInfo,
-  skolemiseRuntimeUnk,
-  zonkTcTyVar, zonkTcTyVars,
+    zonkTcTyVar, zonkTcTyVars,
   zonkTcTyVarToTyVar, zonkTyVarTyVarPairs,
   zonkTyCoVarsAndFV, zonkTcTypeAndFV,
   zonkTyCoVarsAndFVList,
@@ -73,7 +72,7 @@ module TcMType (
   quantifyTyVars,
   zonkTcTyCoVarBndr, zonkTcTyVarBinder,
   zonkTcType, zonkTcTypes, zonkCo,
-  zonkTyCoVarKind, zonkTcTypeMapper,
+  zonkTyCoVarKind,
 
   zonkEvVar, zonkWC, zonkSimples,
   zonkId, zonkCoVar,
@@ -1140,21 +1139,12 @@ defaultTyVar default_kind tv
       where
         (_, kv') = tidyOpenTyCoVar emptyTidyEnv kv
 
-skolemiseRuntimeUnk :: TcTyVar -> TcM TyVar
-skolemiseRuntimeUnk tv
-  = skolemise_tv tv RuntimeUnk
-
 skolemiseUnboundMetaTyVar :: TcTyVar -> TcM TyVar
-skolemiseUnboundMetaTyVar tv
-  = skolemise_tv tv (SkolemTv (metaTyVarTcLevel tv) False)
-
-skolemise_tv :: TcTyVar -> TcTyVarDetails -> TcM TyVar
 -- We have a Meta tyvar with a ref-cell inside it
--- Skolemise it, so that
---   we are totally out of Meta-tyvar-land
--- We create a skolem TyVar, not a regular TyVar
+-- Skolemise it, so that we are totally out of Meta-tyvar-land
+-- We create a skolem TcTyVar, not a regular TyVar
 --   See Note [Zonking to Skolem]
-skolemise_tv tv details
+skolemiseUnboundMetaTyVar tv
   = ASSERT2( isMetaTyVar tv, ppr tv )
     do  { when debugIsOn (check_empty tv)
         ; span <- getSrcSpanM    -- Get the location from "here"
@@ -1173,6 +1163,7 @@ skolemise_tv tv details
         ; return final_tv }
 
   where
+    details = SkolemTv (metaTyVarTcLevel tv) False
     check_empty tv       -- [Sept 04] Check for non-empty.
       = when debugIsOn $  -- See note [Silly Type Synonym]
         do { cts <- readMetaTyVar tv
@@ -1551,7 +1542,7 @@ zonkTcTypeMapper = TyCoMapper
   , tcm_tyvar = const zonkTcTyVar
   , tcm_covar = const (\cv -> mkCoVarCo <$> zonkTyCoVarKind cv)
   , tcm_hole  = hole
-  , tcm_tybinder = \_env tv _vis -> ((), ) <$> zonkTcTyCoVarBndr tv
+  , tcm_tycobinder = \_env tv _vis -> ((), ) <$> zonkTcTyCoVarBndr tv
   , tcm_tycon = return }
   where
     hole :: () -> CoercionHole -> TcM Coercion
@@ -1589,10 +1580,10 @@ zonkTcTyCoVarBndr tyvar
   = ASSERT2( isImmutableTyVar tyvar || (not $ isTyVar tyvar), pprTyVar tyvar )
     updateTyVarKindM zonkTcType tyvar
 
-zonkTcTyVarBinder :: TyVarBndr TcTyVar vis -> TcM (TyVarBndr TcTyVar vis)
-zonkTcTyVarBinder (TvBndr tv vis)
+zonkTcTyVarBinder :: VarBndr TcTyVar vis -> TcM (VarBndr TcTyVar vis)
+zonkTcTyVarBinder (Bndr tv vis)
   = do { tv' <- zonkTcTyCoVarBndr tv
-       ; return (TvBndr tv' vis) }
+       ; return (Bndr tv' vis) }
 
 zonkTcTyVar :: TcTyVar -> TcM TcType
 -- Simply look through all Flexis
@@ -1605,7 +1596,10 @@ zonkTcTyVar tv
          -> do { cts <- readMutVar ref
                ; case cts of
                     Flexi       -> zonk_kind_and_return
-                    Indirect ty -> zonkTcType ty }
+                    Indirect ty -> do { zty <- zonkTcType ty
+                                      ; writeTcRef ref (Indirect zty)
+                                        -- See Note [Sharing in zonking]
+                                      ; return zty } }
 
   | otherwise -- coercion variable
   = zonk_kind_and_return
@@ -1631,7 +1625,26 @@ zonkTyVarTyVarPairs prs
     do_one (nm, tv) = do { tv' <- zonkTcTyVarToTyVar tv
                          ; return (nm, tv') }
 
-{-
+{- Note [Sharing in zonking]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Suppose we have
+   alpha :-> beta :-> gamma :-> ty
+where the ":->" means that the unification variable has been
+filled in with Indirect. Then when zonking alpha, it'd be nice
+to short-circuit beta too, so we end up with
+   alpha :-> zty
+   beta  :-> zty
+   gamma :-> zty
+where zty is the zonked version of ty.  That way, if we come across
+beta later, we'll have less work to do.  (And indeed the same for
+alpha.)
+
+This is easily achieved: just overwrite (Indirect ty) with (Indirect
+zty).  Non-systematic perf comparisons suggest that this is a modest
+win.
+
+But c.f Note [Sharing when zonking to Type] in TcHsSyn.
+
 %************************************************************************
 %*                                                                      *
                  Tidying
@@ -1718,11 +1731,11 @@ tidySigSkol :: TidyEnv -> UserTypeCtxt
 tidySigSkol env cx ty tv_prs
   = SigSkol cx (tidy_ty env ty) tv_prs'
   where
-    tv_prs' = mapSnd (tidyTyVarOcc env) tv_prs
+    tv_prs' = mapSnd (tidyTyCoVarOcc env) tv_prs
     inst_env = mkNameEnv tv_prs'
 
-    tidy_ty env (ForAllTy (TvBndr tv vis) ty)
-      = ForAllTy (TvBndr tv' vis) (tidy_ty env' ty)
+    tidy_ty env (ForAllTy (Bndr tv vis) ty)
+      = ForAllTy (Bndr tv' vis) (tidy_ty env' ty)
       where
         (env', tv') = tidy_tv_bndr env tv
 
@@ -1731,13 +1744,13 @@ tidySigSkol env cx ty tv_prs
 
     tidy_ty env ty = tidyType env ty
 
-    tidy_tv_bndr :: TidyEnv -> TyVar -> (TidyEnv, TyVar)
+    tidy_tv_bndr :: TidyEnv -> TyCoVar -> (TidyEnv, TyCoVar)
     tidy_tv_bndr env@(occ_env, subst) tv
       | Just tv' <- lookupNameEnv inst_env (tyVarName tv)
       = ((occ_env, extendVarEnv subst tv tv'), tv')
 
       | otherwise
-      = tidyTyCoVarBndr env tv
+      = tidyVarBndr env tv
 
 -------------------------------------------------------------------------
 {-

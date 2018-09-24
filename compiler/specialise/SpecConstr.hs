@@ -38,7 +38,6 @@ import TyCon            ( tyConName )
 import Id
 import PprCore          ( pprParendExpr )
 import MkCore           ( mkImpossibleExpr )
-import Var
 import VarEnv
 import VarSet
 import Name
@@ -507,7 +506,7 @@ sc_force to True when calling specLoop. This flag does four things:
   * Ignore specConstrCount, to make arbitrary numbers of specialisations
         (see specialise)
   * Specialise even for arguments that are not scrutinised in the loop
-        (see argToPat; Trac #4488)
+        (see argToPat; Trac #4448)
   * Only specialise on recursive types a finite number of times
         (see is_too_recursive; Trac #5550; Note [Limit recursive specialisation])
 

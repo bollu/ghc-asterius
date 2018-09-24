@@ -483,7 +483,7 @@ trieMapView ty
   -- First check for TyConApps that need to be expanded to
   -- AppTy chains.
   | Just (tc, tys@(_:_)) <- tcSplitTyConApp_maybe ty
-  = Just $ foldl AppTy (TyConApp tc []) tys
+  = Just $ foldl' AppTy (TyConApp tc []) tys
 
   -- Then resolve any remaining nullary synonyms.
   | Just ty' <- tcView ty = Just ty'
@@ -522,8 +522,8 @@ instance Eq (DeBruijn Type) where
             -> tc == tc' && D env tys == D env' tys'
         (LitTy l, LitTy l')
             -> l == l'
-        (ForAllTy (TvBndr tv _) ty, ForAllTy (TvBndr tv' _) ty')
-            -> D env (tyVarKind tv)    == D env' (tyVarKind tv') &&
+        (ForAllTy (Bndr tv _) ty, ForAllTy (Bndr tv' _) ty')
+            -> D env (varType tv)      == D env' (varType tv') &&
                D (extendCME env tv) ty == D (extendCME env' tv') ty'
         (CoercionTy {}, CoercionTy {})
             -> True
@@ -563,7 +563,7 @@ lkT (D env ty) m = go ty m
     go (TyConApp tc [])            = tm_tycon  >.> lkDNamed tc
     go ty@(TyConApp _ (_:_))       = pprPanic "lkT TyConApp" (ppr ty)
     go (LitTy l)                   = tm_tylit  >.> lkTyLit l
-    go (ForAllTy (TvBndr tv _) ty) = tm_forall >.> lkG (D (extendCME env tv) ty)
+    go (ForAllTy (Bndr tv _) ty)   = tm_forall >.> lkG (D (extendCME env tv) ty)
                                                >=> lkBndr env tv
     go ty@(FunTy {})               = pprPanic "lkT FunTy" (ppr ty)
     go (CastTy t _)                = go t
@@ -580,7 +580,7 @@ xtT (D _   (TyConApp tc []))  f m = m { tm_tycon  = tm_tycon m |> xtDNamed tc f 
 xtT (D _   (LitTy l))         f m = m { tm_tylit  = tm_tylit m |> xtTyLit l f }
 xtT (D env (CastTy t _))      f m = xtT (D env t) f m
 xtT (D _   (CoercionTy {}))   f m = m { tm_coerce = tm_coerce m |> f }
-xtT (D env (ForAllTy (TvBndr tv _) ty))  f m
+xtT (D env (ForAllTy (Bndr tv _) ty))  f m
   = m { tm_forall = tm_forall m |> xtG (D (extendCME env tv) ty)
                                 |>> xtBndr env tv f }
 xtT (D _   ty@(TyConApp _ (_:_))) _ _ = pprPanic "xtT TyConApp" (ppr ty)
@@ -716,7 +716,7 @@ extendCME (CME { cme_next = bv, cme_env = env }) v
   = CME { cme_next = bv+1, cme_env = extendVarEnv env v bv }
 
 extendCMEs :: CmEnv -> [Var] -> CmEnv
-extendCMEs env vs = foldl extendCME env vs
+extendCMEs env vs = foldl' extendCME env vs
 
 lookupCME :: CmEnv -> Var -> Maybe BoundVar
 lookupCME (CME { cme_env = env }) v = lookupVarEnv env v

@@ -77,7 +77,7 @@ import Id
 import IdInfo
 import PrelNames( absentErrorIdKey )
 import Type
-import TyCoRep( TyBinder(..) )
+import TyCoRep( TyCoBinder(..), TyBinder )
 import Coercion
 import TyCon
 import Unique
@@ -481,8 +481,15 @@ bindNonRec :: Id -> CoreExpr -> CoreExpr -> CoreExpr
 -- the simplifier deals with them perfectly well. See
 -- also 'MkCore.mkCoreLet'
 bindNonRec bndr rhs body
-  | needsCaseBinding (idType bndr) rhs = Case rhs bndr (exprType body) [(DEFAULT, [], body)]
-  | otherwise                          = Let (NonRec bndr rhs) body
+  | isTyVar bndr                       = let_bind
+  | isCoVar bndr                       = if isCoArg rhs then let_bind
+    {- See Note [Binding coercions] -}                  else case_bind
+  | isJoinId bndr                      = let_bind
+  | needsCaseBinding (idType bndr) rhs = case_bind
+  | otherwise                          = let_bind
+  where
+    case_bind = Case rhs bndr (exprType body) [(DEFAULT, [], body)]
+    let_bind  = Let (NonRec bndr rhs) body
 
 -- | Tests whether we have to use a @case@ rather than @let@ binding for this expression
 -- as per the invariants of 'CoreExpr': see "CoreSyn#let_app_invariant"
@@ -505,7 +512,12 @@ mkAltExpr (LitAlt lit) [] []
 mkAltExpr (LitAlt _) _ _ = panic "mkAltExpr LitAlt"
 mkAltExpr DEFAULT _ _ = panic "mkAltExpr DEFAULT"
 
-{-
+{- Note [Binding coercions]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider binding a CoVar, c = e.  Then, we must atisfy
+Note [CoreSyn type and coercion invariant] in CoreSyn,
+which allows only (Coercion co) on the RHS.
+
 ************************************************************************
 *                                                                      *
                Operations oer case alternatives
@@ -943,6 +955,8 @@ it off at source.
 -}
 
 exprIsTrivial :: CoreExpr -> Bool
+-- If you modify this function, you may also
+-- need to modify getIdFromTrivialExpr
 exprIsTrivial (Var _)          = True        -- See Note [Variables are trivial]
 exprIsTrivial (Type _)         = True
 exprIsTrivial (Coercion _)     = True
@@ -972,20 +986,24 @@ if the variable actually refers to a literal; thus we use
 T12076lit for an example where this matters.
 -}
 
-getIdFromTrivialExpr :: CoreExpr -> Id
+getIdFromTrivialExpr :: HasDebugCallStack => CoreExpr -> Id
 getIdFromTrivialExpr e
     = fromMaybe (pprPanic "getIdFromTrivialExpr" (ppr e))
                 (getIdFromTrivialExpr_maybe e)
 
 getIdFromTrivialExpr_maybe :: CoreExpr -> Maybe Id
 -- See Note [getIdFromTrivialExpr]
-getIdFromTrivialExpr_maybe e = go e
-  where go (Var v) = Just v
-        go (App f t) | not (isRuntimeArg t) = go f
-        go (Tick t e) | not (tickishIsCode t) = go e
-        go (Cast e _) = go e
-        go (Lam b e) | not (isRuntimeVar b) = go e
-        go _ = Nothing
+-- Th equations for this should line up with those for exprIsTrivial
+getIdFromTrivialExpr_maybe e
+  = go e
+  where
+    go (App f t) | not (isRuntimeArg t)   = go f
+    go (Tick t e) | not (tickishIsCode t) = go e
+    go (Cast e _)                         = go e
+    go (Lam b e) | not (isRuntimeVar b)   = go e
+    go (Case e _ _ [])                    = go e
+    go (Var v) = Just v
+    go _       = Nothing
 
 {-
 exprIsBottom is a very cheap and cheerful function; it may return
@@ -1867,8 +1885,8 @@ exprIsTickedString_maybe _ = Nothing
 These InstPat functions go here to avoid circularity between DataCon and Id
 -}
 
-dataConRepInstPat   ::                 [Unique] -> DataCon -> [Type] -> ([TyVar], [Id])
-dataConRepFSInstPat :: [FastString] -> [Unique] -> DataCon -> [Type] -> ([TyVar], [Id])
+dataConRepInstPat   ::                 [Unique] -> DataCon -> [Type] -> ([TyCoVar], [Id])
+dataConRepFSInstPat :: [FastString] -> [Unique] -> DataCon -> [Type] -> ([TyCoVar], [Id])
 
 dataConRepInstPat   = dataConInstPat (repeat ((fsLit "ipv")))
 dataConRepFSInstPat = dataConInstPat
@@ -1877,7 +1895,7 @@ dataConInstPat :: [FastString]          -- A long enough list of FSs to use for 
                -> [Unique]              -- An equally long list of uniques, at least one for each binder
                -> DataCon
                -> [Type]                -- Types to instantiate the universally quantified tyvars
-               -> ([TyVar], [Id])       -- Return instantiated variables
+               -> ([TyCoVar], [Id])     -- Return instantiated variables
 -- dataConInstPat arg_fun fss us con inst_tys returns a tuple
 -- (ex_tvs, arg_ids),
 --
@@ -1910,7 +1928,7 @@ dataConInstPat fss uniqs con inst_tys
     (ex_bndrs, arg_ids)
   where
     univ_tvs = dataConUnivTyVars con
-    ex_tvs   = dataConExTyVars con
+    ex_tvs   = dataConExTyCoVars con
     arg_tys  = dataConRepArgTys con
     arg_strs = dataConRepStrictness con  -- 1-1 with arg_tys
     n_ex = length ex_tvs
@@ -1926,13 +1944,16 @@ dataConInstPat fss uniqs con inst_tys
     (full_subst, ex_bndrs) = mapAccumL mk_ex_var univ_subst
                                        (zip3 ex_tvs ex_fss ex_uniqs)
 
-    mk_ex_var :: TCvSubst -> (TyVar, FastString, Unique) -> (TCvSubst, TyVar)
-    mk_ex_var subst (tv, fs, uniq) = (Type.extendTvSubstWithClone subst tv
+    mk_ex_var :: TCvSubst -> (TyCoVar, FastString, Unique) -> (TCvSubst, TyCoVar)
+    mk_ex_var subst (tv, fs, uniq) = (Type.extendTCvSubstWithClone subst tv
                                        new_tv
                                      , new_tv)
       where
-        new_tv = mkTyVar (mkSysTvName uniq fs) kind
-        kind   = Type.substTyUnchecked subst (tyVarKind tv)
+        new_tv | isTyVar tv
+               = mkTyVar (mkSysTvName uniq fs) kind
+               | otherwise
+               = mkCoVar (mkSystemVarName uniq fs) kind
+        kind   = Type.substTyUnchecked subst (varType tv)
 
       -- Make value vars, instantiating types
     arg_ids = zipWith4 mk_id_var id_uniqs id_fss arg_tys arg_strs

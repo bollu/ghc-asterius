@@ -203,7 +203,7 @@ dsFCall :: Id -> Coercion -> ForeignCall -> Maybe Header
 dsFCall fn_id co fcall mDeclHeader = do
     let
         ty                   = pFst $ coercionKind co
-        (tv_bndrs, rho)      = tcSplitForAllTyVarBndrs ty
+        (tv_bndrs, rho)      = tcSplitForAllVarBndrs ty
         (arg_tys, io_res_ty) = tcSplitFunTys rho
 
     args <- newSysLocalsDs arg_tys  -- no FFI levity-polymorphism
@@ -605,7 +605,7 @@ mkFExportCBits dflags c_nm maybe_target arg_htys res_hty is_IO_res_ty cc
 
   -- the expression we give to rts_evalIO
   expr_to_run
-     = foldl appArg the_cfun arg_info -- NOT aug_arg_info
+     = foldl' appArg the_cfun arg_info -- NOT aug_arg_info
        where
           appArg acc (arg_cname, _, arg_hty, _)
              = text "rts_apply"

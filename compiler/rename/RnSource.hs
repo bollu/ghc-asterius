@@ -29,7 +29,7 @@ import RnUtils          ( HsDocContext(..), mapFvRn, bindLocalNames
                         , checkDupRdrNames, inHsDocContext, bindLocalNamesFV
                         , checkShadowedRdrNames, warnUnusedTypePatterns
                         , extendTyVarEnvFVRn, newLocalBndrsRn )
-import RnUnbound        ( mkUnboundName )
+import RnUnbound        ( mkUnboundName, notInScopeErr )
 import RnNames
 import RnHsDoc          ( rnHsDoc, rnMbLHsDoc )
 import TcAnnotations    ( annCtxt )
@@ -38,7 +38,6 @@ import TcRnMonad
 import ForeignCall      ( CCallTarget(..) )
 import Module
 import HscTypes         ( Warnings(..), plusWarns )
-import Class            ( FunDep )
 import PrelNames        ( applicativeClassName, pureAName, thenAName
                         , monadClassName, returnMName, thenMName
                         , monadFailClassName, failMName, failMName_preMFP
@@ -1094,14 +1093,14 @@ badRuleVar name var
 badRuleLhsErr :: FastString -> LHsExpr GhcRn -> HsExpr GhcRn -> SDoc
 badRuleLhsErr name lhs bad_e
   = sep [text "Rule" <+> pprRuleName name <> colon,
-         nest 4 (vcat [err,
+         nest 2 (vcat [err,
                        text "in left-hand side:" <+> ppr lhs])]
     $$
     text "LHS must be of form (f e1 .. en) where f is not forall'd"
   where
     err = case bad_e of
-            HsUnboundVar _ uv -> text "Not in scope:" <+> ppr uv
-            _ -> text "Illegal expression:" <+> ppr bad_e
+            HsUnboundVar _ uv -> notInScopeErr (mkRdrUnqual (unboundVarOcc uv))
+            _                 -> text "Illegal expression:" <+> ppr bad_e
 
 {- **************************************************************
          *                                                      *
@@ -2141,8 +2140,7 @@ extendPatSynEnv val_decls local_fix_env thing = do {
 *********************************************************
 -}
 
-rnFds :: [Located (FunDep (Located RdrName))]
-  -> RnM [Located (FunDep (Located Name))]
+rnFds :: [LHsFunDep GhcPs] -> RnM [LHsFunDep GhcRn]
 rnFds fds
   = mapM (wrapLocM rn_fds) fds
   where

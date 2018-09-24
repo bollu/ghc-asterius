@@ -392,7 +392,7 @@ functorLikeTraverse var (FT { ft_triv = caseTrivial,     ft_var = caseVar
          -- variables in a unboxed tuple pattern match and expression as it
          -- actually needs. See Trac #12399
          (xrs,xcs) = unzip (map (go co) (dropRuntimeRepArgs args))
-    go co (ForAllTy (TvBndr v vis) x)
+    go co (ForAllTy (Bndr v vis) x)
        | isVisibleArgFlag vis = panic "unexpected visible binder"
        | v /= var && xc       = (caseForAll v xr,True)
        where (xr,xc) = go co x
@@ -940,7 +940,7 @@ gen_Traversable_binds loc tycon
         mkApCon con [] = nlHsApps pure_RDR [con]
         mkApCon con [x] = nlHsApps fmap_RDR [con,x]
         mkApCon con (x1:x2:xs) =
-            foldl appAp (nlHsApps liftA2_RDR [con,x1,x2]) xs
+            foldl' appAp (nlHsApps liftA2_RDR [con,x1,x2]) xs
           where appAp x y = nlHsApps ap_RDR [x,y]
 
 -----------------------------------------------------------------------

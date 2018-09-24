@@ -135,9 +135,13 @@ test('T2615',
 
 # omit dyn and profiling ways, because we don't build dyn_l or p_l
 # variants of the RTS by default
-test('traceEvent', [ omit_ways(['dyn'] + prof_ways),
+test('traceEvent', [ omit_ways(['dyn', 'ghci'] + prof_ways),
                      extra_run_opts('+RTS -ls -RTS') ],
                    compile_and_run, ['-eventlog'])
+
+test('traceBinaryEvent', [ omit_ways(['dyn', 'ghci'] + prof_ways),
+                           extra_run_opts('+RTS -ls -RTS') ],
+                         compile_and_run, ['-eventlog'])
 
 test('T4059', [], run_command, ['$MAKE -s --no-print-directory T4059'])
 
@@ -386,6 +390,9 @@ test('numa001', [ extra_run_opts('8'), extra_ways(['debug_numa']) ]
 test('T12497', [ unless(opsys('mingw32'), skip)
                ],
                run_command, ['$MAKE -s --no-print-directory T12497'])
+
+test('T13617', [ unless(opsys('mingw32'), skip)],
+               run_command, ['$MAKE -s --no-print-directory T13617'])
 
 # This test sometimes produces out of sequence samples in the profasm way, but
 # not reliably, so we just skip it. See ticket #15065.
