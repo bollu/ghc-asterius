@@ -953,6 +953,8 @@ pprTrustFlag flag = case flag of
 
 -- -----------------------------------------------------------------------------
 -- Wired-in packages
+--
+-- See Note [Wired-in packages] in Module
 
 type WiredInUnitId = String
 type WiredPackagesMap = Map WiredUnitId WiredUnitId
@@ -970,10 +972,9 @@ findWiredInPackages
           WiredPackagesMap) -- map from unit id to wired identity
 
 findWiredInPackages dflags prec_map pkgs vis_map = do
-  --
   -- Now we must find our wired-in packages, and rename them to
-  -- their canonical names (eg. base-1.0 ==> base).
-  --
+  -- their canonical names (eg. base-1.0 ==> base), as described
+  -- in Note [Wired-in packages] in Module
   let
         matches :: PackageConfig -> WiredInUnitId -> Bool
         pc `matches` pid
@@ -1077,7 +1078,9 @@ findWiredInPackages dflags prec_map pkgs vis_map = do
 
 -- Helper functions for rewiring Module and UnitId.  These
 -- rewrite UnitIds of modules in wired-in packages to the form known to the
--- compiler. For instance, base-4.9.0.0 will be rewritten to just base, to match
+-- compiler, as described in Note [Wired-in packages] in Module.
+--
+-- For instance, base-4.9.0.0 will be rewritten to just base, to match
 -- what appears in PrelNames.
 
 upd_wired_in_mod :: WiredPackagesMap -> Module -> Module

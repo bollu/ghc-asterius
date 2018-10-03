@@ -123,12 +123,12 @@ implementations of the integer library:
    targets and is GPL licensed)
  * integer-simple (slow, but pure Haskell and BSD-licensed)
 
-We want the compiler to work with eitherone. The way we achieve this is:
+We want the compiler to work with either one. The way we achieve this is:
 
  * When compiling the integer-{gmp,simple} library, we pass
      -this-unit-id  integer-wired-in
    to GHC (see the cabal file libraries/integer-{gmp,simple}.
- * This way, GHC can use just his UnitID (see Module.integerUnitId) when
+ * This way, GHC can use just this UnitID (see Module.integerUnitId) when
    generating code, and the linker will succeed.
 
 Unfortuately, the abstraction is not complete: When using integer-gmp, we
@@ -136,10 +136,10 @@ really want to use the S# constructor directly. This is controlled by
 the `integerLibrary` field of `DynFlags`: If it is IntegerGMP, we use
 this constructor directly (see  CorePrep.lookupIntegerSDataConName)
 
-When we read the package data base, we have to rewrite it to use
+When GHC reads the package data base, it (internally only) pretends it has UnitId
 `integer-wired-in` instead of the actual UnitId (which includes the version
-number); just like for `base` and other packages. This is done in
-Packages.findWiredInPackages.
+number); just like for `base` and other packages, as described in
+Note [Wired-in packages] in Module. This is done in Packages.findWiredInPackages.
 -}
 
 {-# LANGUAGE CPP #-}
