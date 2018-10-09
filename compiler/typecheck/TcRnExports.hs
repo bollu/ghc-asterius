@@ -33,7 +33,7 @@ import DataCon
 import PatSyn
 import Maybes
 import Util (capitalise)
-import FastString (fsLit)
+
 
 import Control.Monad
 import DynFlags
@@ -124,18 +124,19 @@ tcRnExports explicit_mod exports
        -- list, to avoid bleating about re-exporting a deprecated
        -- thing (especially via 'module Foo' export item)
    do   {
-        -- In interactive mode, we behave as if he had
+        -- If the module header is omitted altogether, then behave
+        -- as if the user had written "module Main(main) where..."
+        -- EXCEPT in interactive mode, when we behave as if he had
         -- written "module Main where ..."
+        -- Reason: don't want to complain about 'main' not in scope
+        --         in interactive mode
         ; dflags <- getDynFlags
-        ; let default_main = case mainFunIs dflags of
-                 Just main_fun -> mkUnqual varName (fsLit main_fun)
-                 Nothing       -> main_RDR_Unqual
         ; let real_exports
                  | explicit_mod = exports
                  | ghcLink dflags == LinkInMemory = Nothing
                  | otherwise
                           = Just (noLoc [noLoc (IEVar noExt
-                                     (noLoc (IEName $ noLoc default_main)))])
+                                     (noLoc (IEName $ noLoc main_RDR_Unqual)))])
                         -- ToDo: the 'noLoc' here is unhelpful if 'main'
                         --       turns out to be out of scope
 
