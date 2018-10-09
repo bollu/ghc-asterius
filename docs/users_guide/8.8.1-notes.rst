@@ -40,6 +40,20 @@ Language
   terminating value of type ``Void``. Accordingly, GHC will not warn about
   ``K2`` (whereas previous versions of GHC would).
 
+- ``(!)`` is now a valid type operator: ::
+
+      type family a ! b
+
+- An existential context no longer requires parenthesization: ::
+
+    class a + b
+    data D1 = forall a b. (a + b) => D1 a b
+    data D2 = forall a b.  a + b  => D2 a b -- now allowed
+
+- The requirement that kind signatures always be parenthesized has been relaxed.
+  For instance, it is now permissible to write ``Proxy '(a :: A, b :: B)``
+  (previous GHC versions required extra parens: ``Proxy '((a :: A), (b :: B))``).
+
 Compiler
 ~~~~~~~~
 
@@ -90,6 +104,10 @@ Template Haskell
   eventlog events similar to ``traceBinaryEvent#`` but allows the user to pass
   the event payload as a binary blob instead of a ``String``.
 
+- The ``StableName#`` type parameter now has a phantom role instead of
+  a representational one. There is really no reason to care about the
+  type of the underlying object.
+
 ``ghc`` library
 ~~~~~~~~~~~~~~~
 
@@ -99,6 +117,10 @@ Template Haskell
 
 - Support the characters from recent versions of Unicode (up to v. 12) in literals
     (see :ghc-ticket:`5518`).
+
+- The ``StableName`` type parameter now has a phantom role instead of
+  a representational one. There is really no reason to care about the
+  type of the underlying object.
 
 Build system
 ~~~~~~~~~~~~
