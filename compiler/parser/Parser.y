@@ -29,7 +29,7 @@ module Parser (parseModule, parseSignature, parseImport, parseStatement, parseBa
                parseType, parseHeader) where
 
 -- base
-import Control.Monad    ( unless, liftM )
+import Control.Monad    ( unless, liftM, when )
 import GHC.Exts
 import Data.Char
 import Control.Monad    ( mplus )
@@ -1059,8 +1059,8 @@ cl_decl :: { LTyClDecl GhcPs }
 --
 ty_decl :: { LTyClDecl GhcPs }
            -- ordinary type synonyms
-        : 'type' type '=' ctypedoc
-                -- Note ctype, not sigtype, on the right of '='
+        : 'type' type '=' ktypedoc
+                -- Note ktypedoc, not sigtype, on the right of '='
                 -- We allow an explicit for-all but we don't insert one
                 -- in   type Foo a = (b,b)
                 -- Instead we just say b is out of scope
@@ -1776,10 +1776,15 @@ unpackedness :: { Located ([AddAnn], SourceText, SrcUnpackedness) }
         : '{-# UNPACK' '#-}'   { sLL $1 $> ([mo $1, mc $2], getUNPACK_PRAGs $1, SrcUnpack) }
         | '{-# NOUNPACK' '#-}' { sLL $1 $> ([mo $1, mc $2], getNOUNPACK_PRAGs $1, SrcNoUnpack) }
 
--- A ktype is a ctype, possibly with a kind annotation
+-- A ktype/ktypedoc is a ctype/ctypedoc, possibly with a kind annotation
 ktype :: { LHsType GhcPs }
         : ctype                { $1 }
         | ctype '::' kind      {% ams (sLL $1 $> $ HsKindSig noExt $1 $3)
+                                      [mu AnnDcolon $2] }
+
+ktypedoc :: { LHsType GhcPs }
+         : ctypedoc            { $1 }
+         | ctypedoc '::' kind  {% ams (sLL $1 $> $ HsKindSig noExt $1 $3)
                                       [mu AnnDcolon $2] }
 
 -- A ctype is a for-all type
@@ -2483,8 +2488,14 @@ infixexp :: { LHsExpr GhcPs }
 infixexp_top :: { LHsExpr GhcPs }
         : exp10_top               { $1 }
         | infixexp_top qop exp10_top
-                                  {% ams (sLL $1 $> (OpApp noExt $1 $2 $3))
-                                         [mj AnnVal $2] }
+                                  {% do { when (srcSpanEnd (getLoc $2)
+                                            == srcSpanStart (getLoc $3)
+                                            && checkIfBang $2) $
+                                            warnSpaceAfterBang (comb2 $2 $3);
+                                          ams (sLL $1 $> (OpApp noExt $1 $2 $3))
+                                               [mj AnnVal $2]
+                                        }
+                                  }
 
 
 exp10_top :: { LHsExpr GhcPs }
@@ -3704,6 +3715,21 @@ hintExplicitForall' span = do
         , text "Perhaps you intended to use RankNTypes or a similar language"
         , text "extension to enable explicit-forall syntax: forall <tvs>. <type>"
         ]
+
+checkIfBang :: LHsExpr GhcPs -> Bool
+checkIfBang (L _ (HsVar _ (L _ op))) = op == bang_RDR
+checkIfBang _ = False
+
+-- | Warn about missing space after bang
+warnSpaceAfterBang :: SrcSpan -> P ()
+warnSpaceAfterBang span = do
+    bang_on <- extension bangPatEnabled
+    unless bang_on $
+      addWarning Opt_WarnSpaceAfterBang span msg
+    where
+      msg = text "Did you forget to enable BangPatterns?" $$
+            text "If you mean to bind (!) then perhaps you want" $$
+            text "to add a space after the bang for clarity."
 
 -- When two single quotes don't followed by tyvar or gtycon, we report the
 -- error as empty character literal, or TH quote that missing proper type

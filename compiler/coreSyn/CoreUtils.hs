@@ -266,7 +266,7 @@ mkCast e co
   = e
 
 mkCast (Coercion e_co) co
-  | isCoercionType (pSnd (coercionKind co))
+  | isCoVarType (pSnd (coercionKind co))
        -- The guard here checks that g has a (~#) on both sides,
        -- otherwise decomposeCo fails.  Can in principle happen
        -- with unsafeCoerce
@@ -1503,7 +1503,6 @@ expr_ok primop_ok (Lam b e)
                  | isTyVar b = expr_ok primop_ok  e
                  | otherwise = True
 
-
 -- Tick annotations that *tick* cannot be speculated, because these
 -- are meant to identify whether or not (and how often) the particular
 -- source expression was evaluated at runtime.
@@ -1525,10 +1524,13 @@ expr_ok primop_ok (Case scrut bndr _ alts)
   && altsAreExhaustive alts
 
 expr_ok primop_ok other_expr
-  = case collectArgs other_expr of
-        (expr, args) | Var f <- stripTicksTopE (not . tickishCounts) expr
-                     -> app_ok primop_ok f args
-        _            -> False
+  | (expr, args) <- collectArgs other_expr
+  = case stripTicksTopE (not . tickishCounts) expr of
+        Var f   -> app_ok primop_ok f args
+        -- 'RubbishLit' is the only literal that can occur in the head of an
+        -- application and will not be matched by the above case (Var /= Lit).
+        Lit lit -> ASSERT( lit == rubbishLit ) True
+        _       -> False
 
 -----------------------------
 app_ok :: (PrimOp -> Bool) -> Id -> [CoreExpr] -> Bool
@@ -1610,7 +1612,7 @@ isDivOp _                = False
 exprOkForSpeculation accepts very special case expressions.
 Reason: (a ==# b) is ok-for-speculation, but the litEq rules
 in PrelRules convert it (a ==# 3#) to
-   case a of { DEAFULT -> 0#; 3# -> 1# }
+   case a of { DEFAULT -> 0#; 3# -> 1# }
 for excellent reasons described in
   PrelRules Note [The litEq rule: converting equality to case].
 So, annoyingly, we want that case expression to be
@@ -1682,7 +1684,7 @@ In earlier GHCs, we got this:
           0 -> 0 }
 
 Before join-points etc we could only get rid of two cases (which are
-redundant) by recognising that th e(case <# ds 5 of { ... }) is
+redundant) by recognising that the (case <# ds 5 of { ... }) is
 ok-for-speculation, even though it has /lifted/ type.  But now join
 points do the job nicely.
 ------- End of historical note ------------

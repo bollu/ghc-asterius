@@ -39,6 +39,7 @@ generally likely to indicate bugs in your program. These are:
     * :ghc-flag:`-Winaccessible-code`
     * :ghc-flag:`-Wstar-is-type`
     * :ghc-flag:`-Wstar-binder`
+    * :ghc-flag:`-Wspace-after-bang`
 
 The following flags are simple ways to select standard "packages" of warnings:
 
@@ -117,6 +118,7 @@ The following flags are simple ways to select standard "packages" of warnings:
         * :ghc-flag:`-Wsemigroup`
         * :ghc-flag:`-Wnoncanonical-monoid-instances`
         * :ghc-flag:`-Wimplicit-kind-vars`
+        * :ghc-flag:`-Wstar-is-type`
 
 .. ghc-flag:: -Wno-compat
     :shortdesc: Disables all warnings enabled by :ghc-flag:`-Wcompat`.
@@ -1194,6 +1196,9 @@ of ``-W(no-)*``.
      breaking change takes place. The recommended fix is to replace ``*`` with
      ``Type`` imported from ``Data.Kind``.
 
+     Being part of the :ghc-flag:`-Wcompat` option group, this warning is off by
+     default, but will be switched on in a future GHC release.
+
 .. ghc-flag:: -Wstar-binder
      :shortdesc: warn about binding the ``(*)`` type operator despite
          :ghc-flag:`-XStarIsType`
@@ -1252,6 +1257,12 @@ of ``-W(no-)*``.
     per-module basis with :ghc-flag:`-Wno-simplifiable-class-constraints
     <-Wsimplifiable-class-constraints>`.
 
+.. ghc-flag:: -Wspace-after-bang
+     :shortdesc: warn for missing space before the second argument
+        of an infix definition of ``(!)`` when
+        :ghc-flag:`-XBangPatterns` are not enabled
+     :type: dynamic
+     :reverse: -Wno-missing-space-after-bang
 .. ghc-flag:: -Wtabs
     :shortdesc: warn if there are tabs in the source file
     :type: dynamic

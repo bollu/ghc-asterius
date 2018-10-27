@@ -2994,6 +2994,37 @@ primop  TagToEnumOp "tagToEnum#" GenPrimOp
 
 -- Note [dataToTag#]
 -- ~~~~~~~~~~~~~~~~~
+-- The primop dataToTag# is unusual because it evaluates its argument.
+-- Only `SeqOp` shares that property.  (Other primops do not do anything
+-- as fancy as argument evaluation.)  The special handling for dataToTag#
+-- is:
+--
+-- * CoreUtils.exprOkForSpeculation has a special case for DataToTagOp,
+--   (actually in app_ok).  Most primops with lifted arguments do not
+--   evaluate those arguments, but DataToTagOp and SeqOp are two
+--   exceptions.  We say that they are /never/ ok-for-speculation,
+--   regardless of the evaluated-ness of their argument.
+--   See CoreUtils Note [PrimOps that evaluate their arguments]
+--
+-- * There is a special case for DataToTagOp in StgCmmExpr.cgExpr,
+--   that evaluates its argument and then extracts the tag from
+--   the returned value.
+--
+-- * An application like (dataToTag# (Just x)) is optimised by
+--   dataToTagRule in PrelRules.
+--
+-- * A case expression like
+--      case (dataToTag# e) of <alts>
+--   gets transformed t
+--      case e of <transformed alts>
+--   by PrelRules.caseRules; see Note [caseRules for dataToTag]
+--
+-- See Trac #15696 for a long saga.
+--
+-- Note [dataToTag# hack]
+-- ~~~~~~~~~~~~~~~~~~~~~~
+-- (This a temporary hack: see Trac #15696 commment:60.)
+--
 -- dataToTag# evaluates its argument, so we don't want to float it out.
 -- Consider:
 --
