@@ -115,8 +115,6 @@ pprNatCmmDecl proc@(CmmProc top_info lbl _ (ListGraph blocks)) =
             <+> char '-'
             <+> ppr (mkDeadStripPreventer info_lbl)
        else empty) $$
-      (if debugLevel dflags > 0
-       then ppr (mkAsmTempEndLabel info_lbl) <> char ':' else empty) $$
       pprSizeDecl info_lbl
 
 -- | Output the ELF .size directive.
@@ -130,20 +128,23 @@ pprSizeDecl lbl
 pprBasicBlock :: LabelMap CmmStatics -> NatBasicBlock Instr -> SDoc
 pprBasicBlock info_env (BasicBlock blockid instrs)
   = sdocWithDynFlags $ \dflags ->
-    maybe_infotable $$
+    maybe_infotable dflags $
     pprLabel asmLbl $$
     vcat (map pprInstr instrs) $$
     (if debugLevel dflags > 0
      then ppr (mkAsmTempEndLabel asmLbl) <> char ':' else empty)
   where
     asmLbl = blockLbl blockid
-    maybe_infotable = case mapLookup blockid info_env of
-       Nothing   -> empty
-       Just (Statics info_lbl info) ->
+    maybe_infotable dflags c = case mapLookup blockid info_env of
+       Nothing -> c
+       Just (Statics infoLbl info) ->
            pprAlignForSection Text $$
            infoTableLoc $$
            vcat (map pprData info) $$
-           pprLabel info_lbl
+           pprLabel infoLbl $$
+           c $$
+           (if debugLevel dflags > 0
+            then ppr (mkAsmTempEndLabel infoLbl) <> char ':' else empty)
     -- Make sure the info table has the right .loc for the block
     -- coming right after it. See [Note: Info Offset]
     infoTableLoc = case instrs of
@@ -327,7 +328,7 @@ pprReg f r
       (case i of {
          0 -> sLit "%al";     1 -> sLit "%bl";
          2 -> sLit "%cl";     3 -> sLit "%dl";
-        _  -> sLit "very naughty I386 byte register"
+        _  -> sLit $ "very naughty I386 byte register: " ++ show i
       })
 
     ppr32_reg_word i = ptext
@@ -364,7 +365,7 @@ pprReg f r
         10 -> sLit "%r10b";   11 -> sLit "%r11b";
         12 -> sLit "%r12b";   13 -> sLit "%r13b";
         14 -> sLit "%r14b";   15 -> sLit "%r15b";
-        _  -> sLit "very naughty x86_64 byte register"
+        _  -> sLit $ "very naughty x86_64 byte register: " ++ show i
       })
 
     ppr64_reg_word i = ptext
@@ -789,8 +790,11 @@ pprInstr (POP format op) = pprFormatOp (sLit "pop") format op
 -- pprInstr POPA = text "\tpopal"
 
 pprInstr NOP = text "\tnop"
+pprInstr (CLTD II8) = text "\tcbtw"
+pprInstr (CLTD II16) = text "\tcwtd"
 pprInstr (CLTD II32) = text "\tcltd"
 pprInstr (CLTD II64) = text "\tcqto"
+pprInstr (CLTD x) = panic $ "pprInstr: " ++ show x
 
 pprInstr (SETCC cond op) = pprCondInstr (sLit "set") cond (pprOperand II8 op)
 
@@ -1075,9 +1079,6 @@ pprInstr (XADD format src dst) = pprFormatOpOp (sLit "xadd") format src dst
 
 pprInstr (CMPXCHG format src dst)
    = pprFormatOpOp (sLit "cmpxchg") format src dst
-
-pprInstr _
-        = panic "X86.Ppr.pprInstr: no match"
 
 
 pprTrigOp :: String -> Bool -> CLabel -> CLabel

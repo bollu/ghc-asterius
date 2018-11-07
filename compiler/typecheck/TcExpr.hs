@@ -240,9 +240,9 @@ tcExpr e@(HsOverLabel _ mb_fromLabel l) res_ty
   lbl = mkStrLitTy l
 
   applyFromLabel loc fromLabel =
-    HsAppType
-         (mkEmptyWildCardBndrs (L loc (HsTyLit noExt (HsStrTy NoSourceText l))))
+    HsAppType noExt
          (L loc (HsVar noExt (L loc fromLabel)))
+         (mkEmptyWildCardBndrs (L loc (HsTyLit noExt (HsStrTy NoSourceText l))))
 
 tcExpr (HsLam x match) res_ty
   = do  { (match', wrap) <- tcMatchLambda herald match_ctxt match res_ty
@@ -266,12 +266,12 @@ tcExpr e@(HsLamCase x matches) res_ty
               , text "requires"]
     match_ctxt = MC { mc_what = CaseAlt, mc_body = tcBody }
 
-tcExpr e@(ExprWithTySig sig_ty expr) res_ty
+tcExpr e@(ExprWithTySig _ expr sig_ty) res_ty
   = do { let loc = getLoc (hsSigWcType sig_ty)
        ; sig_info <- checkNoErrs $  -- Avoid error cascade
                      tcUserTypeSig loc sig_ty Nothing
        ; (expr', poly_ty) <- tcExprSig expr sig_info
-       ; let expr'' = ExprWithTySig sig_ty expr'
+       ; let expr'' = ExprWithTySig noExt expr' sig_ty
        ; tcWrapResult e expr'' poly_ty res_ty }
 
 {-
@@ -1112,7 +1112,7 @@ The SrcSpan is the span of the original HsPar
 
 -}
 
-wrapHsArgs :: (XAppTypeE (GhcPass id) ~ LHsWcType GhcRn)
+wrapHsArgs :: (NoGhcTc (GhcPass id) ~ GhcRn)
            => LHsExpr (GhcPass id)
            -> [HsArg (LHsExpr (GhcPass id)) (LHsWcType GhcRn)]
            -> LHsExpr (GhcPass id)
@@ -1164,7 +1164,7 @@ tcApp m_herald (L sp (HsPar _ fun)) args res_ty
 tcApp m_herald (L _ (HsApp _ fun arg1)) args res_ty
   = tcApp m_herald fun (HsValArg arg1 : args) res_ty
 
-tcApp m_herald (L _ (HsAppType ty1 fun)) args res_ty
+tcApp m_herald (L _ (HsAppType _ fun ty1)) args res_ty
   = tcApp m_herald fun (HsTypeArg ty1 : args) res_ty
 
 tcApp m_herald fun@(L loc (HsRecFld _ fld_lbl)) args res_ty
@@ -1329,14 +1329,12 @@ tcArgs fun orig_fun_ty fun_orig orig_args herald
       = do { (wrap1, upsilon_ty) <- topInstantiateInferred fun_orig fun_ty
                -- wrap1 :: fun_ty "->" upsilon_ty
            ; case tcSplitForAllTy_maybe upsilon_ty of
-               Just (tvb, inner_ty) ->
+               Just (tvb, inner_ty)
+                 | binderArgFlag tvb == Specified ->
+                   -- It really can't be Inferred, because we've just instantiated those
+                   -- But, oddly, it might just be Required. See #15859.
                  do { let tv   = binderVar tvb
-                          vis  = binderArgFlag tvb
                           kind = tyVarKind tv
-                    ; MASSERT2( vis == Specified
-                        , (vcat [ ppr fun_ty, ppr upsilon_ty, ppr tvb
-                                , ppr inner_ty, pprTyVar tv
-                                , ppr vis ]) )
                     ; ty_arg <- tcHsTypeApp hs_ty_arg kind
 
                     ; inner_ty <- zonkTcType inner_ty
@@ -2359,7 +2357,7 @@ lookupParents rdr
 -- the record expression in an update must be "obvious", i.e. the
 -- outermost constructor ignoring parentheses.
 obviousSig :: HsExpr GhcRn -> Maybe (LHsSigWcType GhcRn)
-obviousSig (ExprWithTySig ty _) = Just ty
+obviousSig (ExprWithTySig _ _ ty) = Just ty
 obviousSig (HsPar _ p)          = obviousSig (unLoc p)
 obviousSig _                    = Nothing
 

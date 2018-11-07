@@ -12,7 +12,7 @@ module RnTypes (
         rnHsType, rnLHsType, rnLHsTypes, rnContext,
         rnHsKind, rnLHsKind,
         rnHsSigType, rnHsWcType,
-        rnHsSigWcType, rnHsSigWcTypeScoped,
+        HsSigWcTypeScoping(..), rnHsSigWcType, rnHsSigWcTypeScoped,
         rnLHsInstType,
         newTyVarNameRn, collectAnonWildCards,
         rnConDeclFields,
@@ -83,13 +83,29 @@ to break several loop.
 *********************************************************
 -}
 
-rnHsSigWcType :: HsDocContext -> LHsSigWcType GhcPs
-            -> RnM (LHsSigWcType GhcRn, FreeVars)
-rnHsSigWcType doc sig_ty
-  = rn_hs_sig_wc_type False doc sig_ty $ \sig_ty' ->
+data HsSigWcTypeScoping = AlwaysBind
+                          -- ^ Always bind any free tyvars of the given type,
+                          --   regardless of whether we have a forall at the top
+                        | BindUnlessForall
+                          -- ^ Unless there's forall at the top, do the same
+                          --   thing as 'AlwaysBind'
+                        | NeverBind
+                          -- ^ Never bind any free tyvars
+
+rnHsSigWcType :: HsSigWcTypeScoping -> HsDocContext -> LHsSigWcType GhcPs
+              -> RnM (LHsSigWcType GhcRn, FreeVars)
+rnHsSigWcType scoping doc sig_ty
+  = rn_hs_sig_wc_type scoping doc sig_ty $ \sig_ty' ->
     return (sig_ty', emptyFVs)
 
-rnHsSigWcTypeScoped :: HsDocContext -> LHsSigWcType GhcPs
+rnHsSigWcTypeScoped :: HsSigWcTypeScoping
+                       -- AlwaysBind: for pattern type sigs and rules we /do/ want
+                       --             to bring those type variables into scope, even
+                       --             if there's a forall at the top which usually
+                       --             stops that happening
+                       -- e.g  \ (x :: forall a. a-> b) -> e
+                       -- Here we do bring 'b' into scope
+                    -> HsDocContext -> LHsSigWcType GhcPs
                     -> (LHsSigWcType GhcRn -> RnM (a, FreeVars))
                     -> RnM (a, FreeVars)
 -- Used for
@@ -97,33 +113,26 @@ rnHsSigWcTypeScoped :: HsDocContext -> LHsSigWcType GhcPs
 --   - Pattern type signatures
 -- Wildcards are allowed
 -- type signatures on binders only allowed with ScopedTypeVariables
-rnHsSigWcTypeScoped ctx sig_ty thing_inside
+rnHsSigWcTypeScoped scoping ctx sig_ty thing_inside
   = do { ty_sig_okay <- xoptM LangExt.ScopedTypeVariables
        ; checkErr ty_sig_okay (unexpectedTypeSigErr sig_ty)
-       ; rn_hs_sig_wc_type True ctx sig_ty thing_inside
+       ; rn_hs_sig_wc_type scoping ctx sig_ty thing_inside
        }
-    -- True: for pattern type sigs and rules we /do/ want
-    --       to bring those type variables into scope, even
-    --       if there's a forall at the top which usually
-    --       stops that happening
-    -- e.g  \ (x :: forall a. a-> b) -> e
-    -- Here we do bring 'b' into scope
 
-rn_hs_sig_wc_type :: Bool   -- True <=> always bind any free tyvars of the
-                            --          type, regardless of whether it has
-                            --          a forall at the top
-                  -> HsDocContext
-                  -> LHsSigWcType GhcPs
+rn_hs_sig_wc_type :: HsSigWcTypeScoping -> HsDocContext -> LHsSigWcType GhcPs
                   -> (LHsSigWcType GhcRn -> RnM (a, FreeVars))
                   -> RnM (a, FreeVars)
 -- rn_hs_sig_wc_type is used for source-language type signatures
-rn_hs_sig_wc_type always_bind_free_tvs ctxt
+rn_hs_sig_wc_type scoping ctxt
                   (HsWC { hswc_body = HsIB { hsib_body = hs_ty }})
                   thing_inside
   = do { free_vars <- extractFilteredRdrTyVarsDups hs_ty
        ; (tv_rdrs, nwc_rdrs') <- partition_nwcs free_vars
        ; let nwc_rdrs = nubL nwc_rdrs'
-             bind_free_tvs = always_bind_free_tvs || not (isLHsForAllTy hs_ty)
+             bind_free_tvs = case scoping of
+                               AlwaysBind       -> True
+                               BindUnlessForall -> not (isLHsForAllTy hs_ty)
+                               NeverBind        -> False
        ; rnImplicitBndrs bind_free_tvs tv_rdrs $ \ vars ->
     do { (wcs, hs_ty', fvs1) <- rnWcBody ctxt nwc_rdrs hs_ty
        ; let sig_ty' = HsWC { hswc_ext = wcs, hswc_body = ib_ty' }
@@ -818,7 +827,7 @@ bindHsQTyVars :: forall a b.
               -> (LHsQTyVars GhcRn -> Bool -> RnM (b, FreeVars))
                   -- The Bool is True <=> all kind variables used in the
                   -- kind signature are bound on the left.  Reason:
-                  -- the TypeInType clause of Note [Complete user-supplied
+                  -- the last clause of Note [CUSKs: Complete user-supplied
                   -- kind signatures] in HsDecls
               -> RnM (b, FreeVars)
 
@@ -831,7 +840,6 @@ bindHsQTyVars :: forall a b.
 bindHsQTyVars doc mb_in_doc mb_assoc body_kv_occs hsq_bndrs thing_inside
   = do { let hs_tv_bndrs = hsQTvExplicit hsq_bndrs
              bndr_kv_occs = extractHsTyVarBndrsKVs hs_tv_bndrs
-       ; rdr_env <- getLocalRdrEnv
 
        ; let -- See Note [bindHsQTyVars examples] for what
              -- all these various things are doing
@@ -841,8 +849,7 @@ bindHsQTyVars doc mb_in_doc mb_assoc body_kv_occs hsq_bndrs thing_inside
                                  -- Make sure to list the binder kvs before the
                                  -- body kvs, as mandated by
                                  -- Note [Ordering of implicit variables]
-             implicit_kvs = filter_occs rdr_env bndrs kv_occs
-                                 -- Deleting bndrs: See Note [Kind-variable ordering]
+             implicit_kvs = filter_occs bndrs kv_occs
              -- dep_bndrs is the subset of bndrs that are dependent
              --   i.e. appear in bndr/body_kv_occs
              -- Can't use implicit_kvs because we've deleted bndrs from that!
@@ -870,17 +877,15 @@ bindHsQTyVars doc mb_in_doc mb_assoc body_kv_occs hsq_bndrs thing_inside
                       all_bound_on_lhs } }
 
   where
-    filter_occs :: LocalRdrEnv         -- In scope
-                -> [Located RdrName]   -- Bound here
+    filter_occs :: [Located RdrName]   -- Bound here
                 -> [Located RdrName]   -- Potential implicit binders
                 -> [Located RdrName]   -- Final implicit binders
     -- Filter out any potential implicit binders that are either
-    -- already in scope, or are explicitly bound here
-    filter_occs rdr_env bndrs occs
+    -- already in scope, or are explicitly bound in the same HsQTyVars
+    filter_occs bndrs occs
       = filterOut is_in_scope occs
       where
-        is_in_scope locc@(L _ occ) = isJust (lookupLocalRdrEnv rdr_env occ)
-                                  || locc `elemRdr` bndrs
+        is_in_scope locc = locc `elemRdr` bndrs
 
 {- Note [bindHsQTyVars examples]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1577,9 +1582,8 @@ must come after any variables mentioned in their kinds.
   typeRep :: Typeable a => TypeRep (a :: k)   -- forall k a. ...
 
 The k comes first because a depends on k, even though the k appears later than
-the a in the code. Thus, GHC does a *stable topological sort* on the variables.
-By "stable", we mean that any two variables who do not depend on each other
-preserve their existing left-to-right ordering.
+the a in the code. Thus, GHC does ScopedSort on the variables.
+See Note [ScopedSort] in Type.
 
 Implicitly bound variables are collected by any function which returns a
 FreeKiTyVars, FreeKiTyVarsWithDups, or FreeKiTyVarsNoDups, which notably

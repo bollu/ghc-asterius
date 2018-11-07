@@ -14,6 +14,8 @@ mkBoxedTupleTy :: [Type] -> Type
 
 coercibleTyCon, heqTyCon :: TyCon
 
+unitTy :: Type
+
 liftedTypeKind :: Kind
 constraintKind :: Kind
 
@@ -22,9 +24,9 @@ runtimeRepTy :: Type
 
 liftedRepDataConTyCon, vecRepDataConTyCon, tupleRepDataConTyCon :: TyCon
 
-liftedRepDataConTy, unliftedRepDataConTy, intRepDataConTy,
-  wordRepDataConTy, int64RepDataConTy, word64RepDataConTy, addrRepDataConTy,
-  floatRepDataConTy, doubleRepDataConTy :: Type
+liftedRepDataConTy, unliftedRepDataConTy, intRepDataConTy, int8RepDataConTy,
+  wordRepDataConTy, int64RepDataConTy, word8RepDataConTy, word64RepDataConTy,
+  addrRepDataConTy, floatRepDataConTy, doubleRepDataConTy :: Type
 
 vec2DataConTy, vec4DataConTy, vec8DataConTy, vec16DataConTy, vec32DataConTy,
   vec64DataConTy :: Type

@@ -219,6 +219,7 @@ void initRtsFlagsDefaults(void)
     RtsFlags.TraceFlags.sparks_sampled= false;
     RtsFlags.TraceFlags.sparks_full   = false;
     RtsFlags.TraceFlags.user          = false;
+    RtsFlags.TraceFlags.trace_output  = NULL;
 #endif
 
 #if defined(PROFILING)
@@ -235,7 +236,6 @@ void initRtsFlagsDefaults(void)
     RtsFlags.MiscFlags.generate_dump_file      = false;
     RtsFlags.MiscFlags.machineReadable         = false;
     RtsFlags.MiscFlags.internalCounters        = false;
-    RtsFlags.MiscFlags.linkerAlwaysPic         = DEFAULT_LINKER_ALWAYS_PIC;
     RtsFlags.MiscFlags.linkerMemBase           = 0;
 
 #if defined(THREADED_RTS)
@@ -350,7 +350,8 @@ usage_text[] = {
 
 #if defined(TRACING)
 "",
-"  -l[flags]  Log events in binary format to the file <program>.eventlog",
+"  -ol<file>  Send binary eventlog to <file> (default: <program>.eventlog)",
+"  -l[flags]  Log events to a file",
 #  if defined(DEBUG)
 "  -v[flags]  Log events to stderr",
 #  endif
@@ -454,11 +455,6 @@ usage_text[] = {
 "  -e<n>     Maximum number of outstanding local sparks (default: 4096)",
 #endif
 #if defined(x86_64_HOST_ARCH)
-#if !DEFAULT_LINKER_ALWAYS_PIC
-"  -xp       Assume that all object files were compiled with -fPIC",
-"            -fexternal-dynamic-refs and load them anywhere in the address",
-"            space",
-#endif
 "  -xm       Base address to mmap memory in the GHCi linker",
 "            (hex; must be <80000000)",
 #endif
@@ -1440,7 +1436,30 @@ error = true;
                 }
                 ) break;
 
-              /* =========== TRACING ---------=================== */
+              /* =========== OUTPUT ============================ */
+
+              case 'o':
+                  switch(rts_argv[arg][2]) {
+                  case 'l':
+                      OPTION_SAFE;
+                      TRACING_BUILD_ONLY(
+                          if (strlen(&rts_argv[arg][3]) == 0) {
+                              errorBelch("-ol expects filename");
+                              error = true;
+                          } else {
+                              RtsFlags.TraceFlags.trace_output =
+                                  strdup(&rts_argv[arg][3]);
+                          }
+                          );
+                      break;
+
+                  default:
+                      errorBelch("Unknown output flag -o%c", rts_argv[arg][2]);
+                      error = true;
+                  }
+                  break;
+
+              /* =========== TRACING ============================ */
 
               case 'l':
                   OPTION_SAFE;
@@ -1481,11 +1500,6 @@ error = true;
                     break;
 
 #if defined(x86_64_HOST_ARCH)
-                case 'p': /* linkerAlwaysPic */
-                    OPTION_UNSAFE;
-                    RtsFlags.MiscFlags.linkerAlwaysPic = true;
-                    break;
-
                 case 'm': /* linkerMemBase */
                     OPTION_UNSAFE;
                     if (rts_argv[arg][3] != '\0') {

@@ -51,6 +51,7 @@ import {-# SOURCE #-} TcSplice ( finishTH, runRemoteModFinalizers )
 import RnSplice ( rnTopSpliceDecls, traceSplice, SpliceInfo(..) )
 import IfaceEnv( externaliseName )
 import TcHsType
+import TcValidity( checkValidType )
 import TcMatches
 import Inst( deeplyInstantiate )
 import TcUnify( checkConstraints )
@@ -2276,7 +2277,7 @@ getGhciStepIO = do
         stepTy :: LHsSigWcType GhcRn
         stepTy = mkEmptyWildCardBndrs (mkEmptyImplicitBndrs step_ty)
 
-    return (noLoc $ ExprWithTySig stepTy (nlHsVar ghciStepIoMName))
+    return (noLoc $ ExprWithTySig noExt (nlHsVar ghciStepIoMName) stepTy)
 
 isGHCiMonad :: HscEnv -> String -> IO (Messages, Maybe Name)
 isGHCiMonad hsc_env ty
@@ -2397,6 +2398,9 @@ tcRnType hsc_env normalise rdr_type
        ; kvs <- kindGeneralize kind
        ; ty  <- zonkTcTypeToType ty
 
+       -- Do validity checking on type
+       ; checkValidType GhciCtxt ty
+
        ; ty' <- if normalise
                 then do { fam_envs <- tcGetFamInstEnvs
                         ; let (_, ty')
@@ -2477,17 +2481,14 @@ types that you know are polymorphic, is quite surprising.  See Trac
 
 Note that the goal is to generalise the *kind of the type*, not
 the type itself! Example:
-  ghci> data T m a = MkT (m a)  -- T :: forall . (k -> *) -> k -> *
-  ghci> :k T
-We instantiate T to get (T kappa).  We do not want to kind-generalise
-that to forall k. T k!  Rather we want to take its kind
-   T kappa :: (kappa -> *) -> kappa -> *
-and now kind-generalise that kind, to forall k. (k->*) -> k -> *
-(It was Trac #10122 that made me realise how wrong the previous
-approach was.) -}
+  ghci> data SameKind :: k -> k -> Type
+  ghci> :k SameKind _
 
+We want to get `k -> Type`, not `Any -> Type`, which is what we would
+get without kind-generalisation. Note that `:k SameKind` is OK, as
+GHC will not instantiate SameKind here, and so we see its full kind
+of `forall k. k -> k -> Type`.
 
-{-
 ************************************************************************
 *                                                                      *
                  tcRnDeclsi
@@ -2817,7 +2818,7 @@ withTcPlugins hsc_env m =
     do s <- runTcPluginM start ev_binds_var
        return (solve s, stop s)
 
-getTcPlugins :: DynFlags -> [TcPlugin]
+getTcPlugins :: DynFlags -> [TcRnMonad.TcPlugin]
 getTcPlugins dflags = catMaybes $ map get_plugin (plugins dflags)
   where get_plugin p = tcPlugin (lpPlugin p) (lpArguments p)
 

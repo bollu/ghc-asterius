@@ -4,6 +4,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | Highly random utility functions
 --
@@ -14,7 +15,7 @@ module Util (
 
         -- * General list processing
         zipEqual, zipWithEqual, zipWith3Equal, zipWith4Equal,
-        zipLazy, stretchZipWith, zipWithAndUnzip,
+        zipLazy, stretchZipWith, zipWithAndUnzip, zipAndUnzip,
 
         zipWithLazy, zipWith3Lazy,
 
@@ -46,7 +47,7 @@ module Util (
 
         -- * Tuples
         fstOf3, sndOf3, thdOf3,
-        firstM, first3M,
+        firstM, first3M, secondM,
         fst3, snd3, third3,
         uncurry3,
         liftFst, liftSnd,
@@ -263,6 +264,9 @@ firstM f (x, y) = liftM (\x' -> (x', y)) (f x)
 first3M :: Monad m => (a -> m d) -> (a, b, c) -> m (d, b, c)
 first3M f (x, y, z) = liftM (\x' -> (x', y, z)) (f x)
 
+secondM :: Monad m => (b -> m c) -> (a, b) -> m (a, c)
+secondM f (x, y) = (x,) <$> f y
+
 {-
 ************************************************************************
 *                                                                      *
@@ -428,6 +432,15 @@ zipWithAndUnzip f (a:as) (b:bs)
     in
     (r1:rs1, r2:rs2)
 zipWithAndUnzip _ _ _ = ([],[])
+
+-- | This has the effect of making the two lists have equal length by dropping
+-- the tail of the longer one.
+zipAndUnzip :: [a] -> [b] -> ([a],[b])
+zipAndUnzip (a:as) (b:bs)
+  = let (rs1, rs2) = zipAndUnzip as bs
+    in
+    (a:rs1, b:rs2)
+zipAndUnzip _ _ = ([],[])
 
 mapAccumL2 :: (s1 -> s2 -> a -> (s1, s2, b)) -> s1 -> s2 -> [a] -> (s1, s2, [b])
 mapAccumL2 f s1 s2 xs = (s1', s2', ys)

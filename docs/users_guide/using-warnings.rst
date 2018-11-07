@@ -8,8 +8,13 @@ Warnings and sanity-checking
    single: warnings
 
 GHC has a number of options that select which types of non-fatal error
-messages, otherwise known as warnings, can be generated during
-compilation. By default, you get a standard set of warnings which are
+messages, otherwise known as warnings, can be generated during compilation.
+Some options control individual warnings and others control collections
+of warnings.
+To turn off an individual warning ``-W<wflag>``, use ``-Wno-<wflag>``.
+To reverse``-Werror``, which makes all warnings into errors, use ``-Wwarn``.
+
+By default, you get a standard set of warnings which are
 generally likely to indicate bugs in your program. These are:
 
 .. hlist::
@@ -146,7 +151,9 @@ to abort.
     :category:
 
     Makes any warning into a fatal error. Useful so that you don't miss
-    warnings when doing batch compilation.
+    warnings when doing batch compilation. To reverse ``-Werror`` and stop
+    treating any warnings as errors use ``-Wwarn``, or use ``-Wwarn=<wflag>``
+    to stop treating specific warnings as errors.
 
 .. ghc-flag:: -Werror=⟨wflag⟩
     :shortdesc: make a specific warning fatal
@@ -158,7 +165,7 @@ to abort.
     :implies: ``-W<wflag>``
 
     Makes a specific warning into a fatal error. The warning will be enabled if
-    it hasn't been enabled yet.
+    it hasn't been enabled yet. Can be reversed with ``-Wwarn=<wflag>``.
 
     ``-Werror=compat`` has the same effect as ``-Werror=...`` for each warning
     flag in the :ghc-flag:`-Wcompat` option group.
@@ -1503,7 +1510,7 @@ of ``-W(no-)*``.
         do { mapM_ popInt xs ; return 10 }
 
 .. ghc-flag:: -Wunused-type-patterns
-    :shortdesc: warn about unused type variables which arise from patterns
+    :shortdesc: warn about unused type variables which arise from patterns in
         in type family and data family instances
     :type: dynamic
     :reverse: -Wno-unused-type-patterns
@@ -1513,22 +1520,30 @@ of ``-W(no-)*``.
        single: unused type patterns, warning
        single: type patterns, unused
 
-    Report all unused type variables which arise from patterns in type family
-    and data family instances. For instance: ::
+    Report all unused implicitly bound type variables which arise from
+    patterns in type family and data family instances. For instance: ::
 
         type instance F x y = []
 
-    would report ``x`` and ``y`` as unused. The warning is suppressed if the
-    type variable name begins with an underscore, like so: ::
+    would report ``x`` and ``y`` as unused on the right hand side. The warning
+    is suppressed if the type variable name begins with an underscore, like
+    so: ::
 
         type instance F _x _y = []
+
+    When :extension:`ExplicitForAll` is enabled, explicitly quantified type
+    variables may also be identified as unused. For instance: ::
+      
+        type instance forall x y. F x y = []
+    
+    would still report ``x`` and ``y`` as unused on the right hand side
 
     Unlike :ghc-flag:`-Wunused-matches`, :ghc-flag:`-Wunused-type-patterns` is
     not implied by :ghc-flag:`-Wall`. The rationale for this decision is that
     unlike term-level pattern names, type names are often chosen expressly for
     documentation purposes, so using underscores in type names can make the
     documentation harder to read.
-
+    
 .. ghc-flag:: -Wunused-foralls
     :shortdesc: warn about type variables in user-written
         ``forall``\\s that are unused
