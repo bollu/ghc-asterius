@@ -492,7 +492,11 @@ run_thread:
             traceEventStopThread(cap, t, t->why_blocked + 6, 0);
         }
     } else {
-        traceEventStopThread(cap, t, ret, 0);
+        if (ret == StackOverflow) {
+          traceEventStopThread(cap, t, ret, t->tot_stack_size);
+        } else {
+          traceEventStopThread(cap, t, ret, 0);
+        }
     }
 
     ASSERT_FULL_CAPABILITY_INVARIANTS(cap,task);
@@ -2649,9 +2653,7 @@ void
 exitScheduler (bool wait_foreign USED_IF_THREADS)
                /* see Capability.c, shutdownCapability() */
 {
-    Task *task = NULL;
-
-    task = newBoundTask();
+    Task *task = newBoundTask();
 
     // If we haven't killed all the threads yet, do it now.
     if (sched_state < SCHED_SHUTTING_DOWN) {
