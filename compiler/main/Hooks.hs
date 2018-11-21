@@ -109,7 +109,7 @@ data Hooks = Hooks
   , createIservProcessHook :: Maybe (CreateProcess -> IO ProcessHandle)
   , tcRnModuleHook         :: Maybe (ModSummary -> Bool -> HsParsedModule -> Hsc TcGblEnv)
   , stgCmmHook             :: Maybe (DynFlags -> Module -> [TyCon] -> CollectedCCs
-            -> [StgTopBinding] -> HpcInfo -> Stream IO CmmGroup ())
+            -> [CgStgTopBinding] -> HpcInfo -> Stream IO CmmGroup ())
   , cmmToRawCmmHook        :: Maybe (DynFlags -> Maybe Module -> Stream IO CmmGroup ()
             -> IO (Stream IO RawCmmGroup ()))
   }
