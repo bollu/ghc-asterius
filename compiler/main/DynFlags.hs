@@ -465,6 +465,7 @@ data GeneralFlag
    | Opt_StaticArgumentTransformation
    | Opt_CSE
    | Opt_StgCSE
+   | Opt_StgLiftLams
    | Opt_LiberateCase
    | Opt_SpecConstr
    | Opt_SpecConstrKeen
@@ -672,6 +673,7 @@ optimisationFlags = EnumSet.fromList
    , Opt_StaticArgumentTransformation
    , Opt_CSE
    , Opt_StgCSE
+   , Opt_StgLiftLams
    , Opt_LiberateCase
    , Opt_SpecConstr
    , Opt_SpecConstrKeen
@@ -903,6 +905,13 @@ data DynFlags = DynFlags {
   liberateCaseThreshold :: Maybe Int,   -- ^ Threshold for LiberateCase
   floatLamArgs          :: Maybe Int,   -- ^ Arg count for lambda floating
                                         --   See CoreMonad.FloatOutSwitches
+
+  liftLamsRecArgs       :: Maybe Int,   -- ^ Maximum number of arguments after lambda lifting a
+                                        --   recursive function.
+  liftLamsNonRecArgs    :: Maybe Int,   -- ^ Maximum number of arguments after lambda lifting a
+                                        --   non-recursive function.
+  liftLamsKnown         :: Bool,        -- ^ Lambda lift even when this turns a known call
+                                        --   into an unknown call.
 
   cmmProcAlignment      :: Maybe Int,   -- ^ Align Cmm functions at this boundary or use default.
 
@@ -1863,6 +1872,9 @@ defaultDynFlags mySettings (myLlvmTargets, myLlvmPasses) =
         specConstrRecursive     = 3,
         liberateCaseThreshold   = Just 2000,
         floatLamArgs            = Just 0, -- Default: float only if no fvs
+        liftLamsRecArgs         = Just 5, -- Default: the number of available argument hardware registers on x86_64
+        liftLamsNonRecArgs      = Just 5, -- Default: the number of available argument hardware registers on x86_64
+        liftLamsKnown           = False,  -- Default: don't turn known calls into unknown ones
         cmmProcAlignment        = Nothing,
 
         historySize             = 20,
@@ -3520,6 +3532,18 @@ dynamic_flags_deps = [
       (intSuffix (\n d -> d { floatLamArgs = Just n }))
   , make_ord_flag defFlag "ffloat-all-lams"
       (noArg (\d -> d { floatLamArgs = Nothing }))
+  , make_ord_flag defFlag "fstg-lift-lams-rec-args"
+      (intSuffix (\n d -> d { liftLamsRecArgs = Just n }))
+  , make_ord_flag defFlag "fstg-lift-lams-rec-args-any"
+      (noArg (\d -> d { liftLamsRecArgs = Nothing }))
+  , make_ord_flag defFlag "fstg-lift-lams-non-rec-args"
+      (intSuffix (\n d -> d { liftLamsRecArgs = Just n }))
+  , make_ord_flag defFlag "fstg-lift-lams-non-rec-args-any"
+      (noArg (\d -> d { liftLamsRecArgs = Nothing }))
+  , make_ord_flag defFlag "fstg-lift-lams-known"
+      (noArg (\d -> d { liftLamsKnown = True }))
+  , make_ord_flag defFlag "fno-stg-lift-lams-known"
+      (noArg (\d -> d { liftLamsKnown = False }))
   , make_ord_flag defFlag "fproc-alignment"
       (intSuffix (\n d -> d { cmmProcAlignment = Just n }))
   , make_ord_flag defFlag "fblock-layout-weights"
@@ -4014,6 +4038,7 @@ fFlagsDeps = [
   flagSpec "cmm-sink"                         Opt_CmmSink,
   flagSpec "cse"                              Opt_CSE,
   flagSpec "stg-cse"                          Opt_StgCSE,
+  flagSpec "stg-lift-lams"                    Opt_StgLiftLams,
   flagSpec "cpr-anal"                         Opt_CprAnal,
   flagSpec "defer-type-errors"                Opt_DeferTypeErrors,
   flagSpec "defer-typed-holes"                Opt_DeferTypedHoles,
@@ -4544,6 +4569,7 @@ optLevelFlags -- see Note [Documenting optimisation flags]
     , ([1,2],   Opt_CmmSink)
     , ([1,2],   Opt_CSE)
     , ([1,2],   Opt_StgCSE)
+    , ([2],     Opt_StgLiftLams)
     , ([1,2],   Opt_EnableRewriteRules)  -- Off for -O0; see Note [Scoping for Builtin rules]
                                          --              in PrelRules
     , ([1,2],   Opt_FloatIn)
