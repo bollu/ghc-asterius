@@ -87,14 +87,12 @@ dnl use either is considered a Feature.
 dnl ** What command to use to compile compiler sources ?
 dnl --------------------------------------------------------------
 
+AC_ARG_VAR(GHC,[Use as the path to GHC [default=autodetect]])
+AC_PATH_PROG([GHC], [ghc])
 AC_ARG_WITH([ghc],
-[AC_HELP_STRING([--with-ghc=ARG],
-  [Use ARG as the path to GHC  [default=autodetect]])],
-  [WithGhc="$withval"],
-  [if test "$GHC" = ""; then
-    AC_PATH_PROG([GHC], [ghc])
-  fi
-  WithGhc="$GHC"])
+        AS_HELP_STRING([--with-ghc=ARG], [Use ARG as the path to ghc (obsolete, use GHC=ARG instead) [default=autodetect]]),
+        AC_MSG_ERROR([--with-ghc=$withval is obsolete (use './configure GHC=$withval' or 'GHC=$withval ./configure' instead)]))
+AC_SUBST(WithGhc,$GHC)
 
 dnl ** Tell the make system which OS we are using
 dnl $OSTYPE is set by the operating system to "msys" or "cygwin" or something
@@ -673,11 +671,11 @@ dnl --------------------------------------------------------------
 dnl ** Copy the files from the "fs" utility into the right folders.
 dnl --------------------------------------------------------------
 AC_MSG_NOTICE([Creating links for in-tree file handling routines.])
-ln -f -v utils/fs/fs.* utils/lndir/
-ln -f -v utils/fs/fs.* utils/unlit/
-ln -f -v utils/fs/fs.* rts/
-ln -f -v utils/fs/fs.h libraries/base/include/
-ln -f -v utils/fs/fs.c libraries/base/cbits/
+ln -f utils/fs/fs.* utils/lndir/
+ln -f utils/fs/fs.* utils/unlit/
+ln -f utils/fs/fs.* rts/
+ln -f utils/fs/fs.h libraries/base/include/
+ln -f utils/fs/fs.c libraries/base/cbits/
 AC_MSG_NOTICE([Routines in place. Packages can now be build normally.])
 
 dnl --------------------------------------------------------------
@@ -867,9 +865,13 @@ dnl ** check for ghc-pkg command
 FP_PROG_GHC_PKG
 
 dnl ** check for installed happy binary + version
+
+AC_ARG_VAR(HAPPY,[Use as the path to happy [default=autodetect]])
 FPTOOLS_HAPPY
 
 dnl ** check for installed alex binary + version
+
+AC_ARG_VAR(ALEX,[Use as the path to alex [default=autodetect]])
 FPTOOLS_ALEX
 
 dnl --------------------------------------------------
@@ -1221,16 +1223,7 @@ case ${TargetOS} in
         RtsLinkerUseMmap=1
         ;;
     darwin|ios|watchos|tvos)
-        # Don't use mmap on powerpc/darwin as the mmap there doesn't support
-        # reallocating. Reallocating is needed to allocate jump islands just
-        # after each object image. Jumps to these jump islands use relative
-        # branches which are limited to offsets that can be represented in
-        # 24-bits.
-        if test "$TargetArch" != "powerpc" ; then
-            RtsLinkerUseMmap=1
-        else
-            RtsLinkerUseMmap=0
-        fi
+        RtsLinkerUseMmap=1
         ;;
     *)
         # Windows (which doesn't have mmap) and everything else.
@@ -1250,7 +1243,7 @@ AC_ARG_ENABLE(dwarf-unwind,
         [Enable DWARF unwinding support in the runtime system via elfutils' libdw [default=no]])],
     [AC_CHECK_LIB(dw, dwfl_attach_state,
       [UseLibdw=YES],
-      [AC_MSG_ERROR([Cannot find system libdw (required by --enable-dwarf-unwind)])])]
+      [AC_MSG_ERROR([Cannot find system libdw (required by --enable-dwarf-unwind)])])],
     [UseLibdw=NO]
 )
 AC_SUBST(UseLibdw)

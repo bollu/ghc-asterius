@@ -12,6 +12,8 @@ setTestOpts(req_interp)
 if config.have_ext_interp :
        setTestOpts(extra_ways(['ext-interp']))
        setTestOpts(only_ways(['normal','ghci','ext-interp']))
+       if config.ghc_built_by_llvm:
+           setTestOpts(expect_broken_for(16087, ['ext-interp']))
 
 test('TH_mkName', normal, compile, ['-v0'])
 test('TH_overloadedlabels', normal, compile, ['-v0'])
@@ -147,7 +149,10 @@ test('T3177', normal, compile, ['-v0'])
 test('T3177a', normal, compile_fail, ['-v0'])
 
 test('T3319', normal, compile, ['-ddump-splices -v0'])
-test('TH_foreignInterruptible', normal, compile, ['-ddump-splices -v0'])
+test('TH_foreignInterruptible',
+     # Fragile when unregisterised; see #16085
+     when(unregisterised(), skip),
+     compile, ['-ddump-splices -v0'])
 test('TH_foreignCallingConventions', normal,
                                      compile,
                                      ['-ddump-splices -dsuppress-uniques -v0'])
@@ -362,6 +367,8 @@ test('T11484', normal, compile, ['-v0'])
 test('T11629', normal, compile, ['-v0'])
 
 test('T8761', normal, compile, ['-v0 -ddump-splices -dsuppress-uniques'])
+test('T12045TH1', normal, compile, ['-v0 -ddump-splices -dsuppress-uniques'])
+test('T12045TH2', normal, compile, ['-v0'])
 test('T12130', [], multimod_compile,
      ['T12130', '-v0 ' + config.ghc_th_way_flags])
 test('T12387', normal, compile_fail, ['-v0'])
@@ -387,7 +394,10 @@ test('T13018', normal, compile, ['-v0'])
 test('T13123', normal, compile, ['-v0'])
 test('T13098', normal, compile, ['-v0'])
 test('T11046', normal, multimod_compile, ['T11046','-v0'])
-test('T13366', expect_broken_for(13366, ['ghci']), compile_and_run, ['-lstdc++ -v0'])
+test('T13366',
+     [expect_broken_for(13366, ['ghci']), when(opsys('darwin'), expect_broken(16083))],
+     compile_and_run,
+     ['-lstdc++ -v0'])
 test('T13473', normal, multimod_compile_and_run,
      ['T13473.hs', '-v0 ' + config.ghc_th_way_flags])
 test('T13587', expect_broken(13587), compile_and_run, ['-v0'])
@@ -419,12 +429,15 @@ test('T14885a', normal, compile, [''])
 test('T14885b', normal, compile, [''])
 test('T14885c', normal, compile, [''])
 test('T15243', normal, compile, ['-dsuppress-uniques'])
+test('T15270A', normal, compile_fail, [''])
+test('T15270B', normal, compile_fail, [''])
 test('T15321', normal, compile_fail, [''])
 test('T15324', normal, compile, ['-v0 -ddump-splices -dsuppress-uniques'])
 test('T15331', normal, compile, ['-v0 -ddump-splices -dsuppress-uniques'])
 test('T15365', normal, compile, ['-v0 -ddump-splices -dsuppress-uniques'])
 test('T15360a', normal, compile, [''])
 test('T15360b', normal, compile_fail, [''])
+test('T15362', normal, compile_fail,['-v0'])
 # Note: T9693 should be only_ways(['ghci']) once it's fixed.
 test('T9693', expect_broken(9693), ghci_script, ['T9693.script'])
 test('T14471', normal, compile, [''])

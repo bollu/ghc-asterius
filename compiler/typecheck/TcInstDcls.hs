@@ -784,8 +784,8 @@ tcDataFamHeader :: AssocInstInfo -> TyCon -> [Name] -> Maybe [LHsTyVarBndr GhcRn
                 -> HsTyPats GhcRn -> Maybe (LHsKind GhcRn) -> [LConDecl GhcRn]
                 -> TcM ([TyVar], [Type], Kind, ThetaType)
 -- The "header" is the part other than the data constructors themselves
--- e.g.  data instance D [a] :: * -> * = ...
--- Here the "header" is the bit before the "=" sign
+-- e.g.  data instance D [a] :: * -> * where ...
+-- Here the "header" is the bit before the "where"
 tcDataFamHeader mb_clsinfo fam_tc imp_vars mb_bndrs fixity hs_ctxt hs_pats m_ksig hs_cons
   = do { (imp_tvs, (exp_tvs, (stupid_theta, lhs_ty, res_kind)))
             <- pushTcLevelM_                                $
@@ -793,10 +793,13 @@ tcDataFamHeader mb_clsinfo fam_tc imp_vars mb_bndrs fixity hs_ctxt hs_pats m_ksi
                bindImplicitTKBndrs_Q_Skol imp_vars          $
                bindExplicitTKBndrs_Q_Skol AnyKind exp_bndrs $
                do { stupid_theta <- tcHsContext hs_ctxt
-                  ; (lhs_ty, lhs_kind) <- tcFamTyPats fam_tc mb_clsinfo hs_pats
+                  ; (lhs_ty, lhs_kind) <- tcFamTyPats fam_tc hs_pats
+                    -- Ensure that the instance is consistent with its
+                    -- parent class
+                  ; addConsistencyConstraints mb_clsinfo lhs_ty
                   ; mapM_ (wrapLocM_ kcConDecl) hs_cons
                   ; res_kind <- tc_kind_sig m_ksig
-                  ; lhs_ty <- checkExpectedKindX pp_lhs lhs_ty lhs_kind res_kind
+                  ; lhs_ty <- checkExpectedKind YesSaturation pp_lhs lhs_ty lhs_kind res_kind
                   ; return (stupid_theta, lhs_ty, res_kind) }
 
        -- See TcTyClsDecls Note [Generalising in tcFamTyPatsGuts]

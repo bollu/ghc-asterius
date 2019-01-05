@@ -91,7 +91,7 @@ test('ghci051', normal, ghci_script, ['ghci051.script'])
 test('ghci052', normal, ghci_script, ['ghci052.script'])
 test('ghci053', normal, ghci_script, ['ghci053.script'])
 test('ghci054', normal, ghci_script, ['ghci054.script'])
-test('ghci055', combined_output, ghci_script, ['ghci055.script'])
+test('ghci055', [broken_without_gmp, combined_output], ghci_script, ['ghci055.script'])
 
 test('ghci056',
      [pre_cmd('$MAKE -s --no-print-directory ghci056_setup'),
@@ -108,14 +108,15 @@ test('ghci062', [extra_files(['ghci062/', 'ghci062/Test.hs']),
 		ghci_script, ['ghci062.script'])
 test('ghci063', normal, ghci_script, ['ghci063.script'])
 
-test('T2452', normal, ghci_script, ['T2452.script'])
+test('T2452', [extra_hc_opts("-fno-implicit-import-qualified")],
+    ghci_script, ['T2452.script'])
 test('T2766', normal, ghci_script, ['T2766.script'])
 
 test('T1914', [], ghci_script, ['T1914.script'])
 
 test('T2182ghci', normal, ghci_script, ['T2182ghci.script'])
 test('T2182ghci2', [extra_hc_opts("-XNoImplicitPrelude")], ghci_script, ['T2182ghci2.script'])
-test('T2976', normal, ghci_script, ['T2976.script'])
+test('T2976', broken_without_gmp, ghci_script, ['T2976.script'])
 test('T2816', normal, ghci_script, ['T2816.script'])
 test('T789', normal, ghci_script, ['T789.script'])
 test('T3263', normal, ghci_script, ['T3263.script'])
@@ -291,3 +292,4 @@ test('T15743b', normal, ghci_script, ['T15743b.script'])
 test('T15827', normal, ghci_script, ['T15827.script'])
 test('T15898', normal, ghci_script, ['T15898.script'])
 test('T15941', normal, ghci_script, ['T15941.script'])
+test('T16030', normal, ghci_script, ['T16030.script'])

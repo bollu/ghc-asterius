@@ -7,7 +7,6 @@
 -}
 
 {-# LANGUAGE CPP #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module FloatOut ( floatOutwards ) where
 
@@ -47,7 +46,7 @@ The Big Main Idea is:
         a non-one-shot value lambda, and hence may be shared.
 
 
-To achieve this we may need to do two thing:
+To achieve this we may need to do two things:
 
    a) Let-bind the sub-expression:
 
@@ -103,7 +102,7 @@ It turns out that this generates a subexpression of the form
 @
         \deq x ys -> let eq = eqFromEqDict deq in ...
 @
-vwhich might usefully be separated to
+which might usefully be separated to
 @
         \deq -> let eq = eqFromEqDict deq in \xy -> ...
 @

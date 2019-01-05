@@ -167,7 +167,7 @@ out at all.  See notes with lvlMFE below.
 
 But, check this out:
 
--- At one time I tried the effect of not float anything out of an InlineMe,
+-- At one time I tried the effect of not floating anything out of an InlineMe,
 -- but it sometimes works badly.  For example, consider PrelArr.done.  It
 -- has the form         __inline (\d. e)
 -- where e doesn't mention d.  If we float this to
@@ -366,7 +366,7 @@ lvlExpr env expr@(_, AnnLam {})
     (bndrs, body)        = collectAnnBndrs expr
     (env1, bndrs1)       = substBndrsSL NonRecursive env bndrs
     (new_env, new_bndrs) = lvlLamBndrs env1 (le_ctxt_lvl env) bndrs1
-        -- At one time we called a special verion of collectBinders,
+        -- At one time we called a special version of collectBinders,
         -- which ignored coercions, because we don't want to split
         -- a lambda like this (\x -> coerce t (\s -> ...))
         -- This used to happen quite a bit in state-transformer programs,
@@ -462,7 +462,7 @@ lvlCase :: LevelEnv             -- Level of in-scope names/tyvars
 lvlCase env scrut_fvs scrut' case_bndr ty alts
   -- See Note [Floating single-alternative cases]
   | [(con@(DataAlt {}), bs, body)] <- alts
-  , exprIsHNF (deTagExpr scrut')  -- See Note [Check the output scrutinee for okForSpec]
+  , exprIsHNF (deTagExpr scrut')  -- See Note [Check the output scrutinee for exprIsHNF]
   , not (isTopLvl dest_lvl)       -- Can't have top-level cases
   , not (floatTopLvlOnly env)     -- Can float anywhere
   =     -- Always float the case if possible
@@ -517,7 +517,7 @@ Things to note:
 
      - exrpIsHNF catches the key case of an evaluated variable
 
-     - exprOkForSpeculaion is /false/ of an evaluated varaible;
+     - exprOkForSpeculation is /false/ of an evaluated variable;
        See Note [exprOkForSpeculation and evaluated variables] in CoreUtils
        So we'd actually miss the key case!
 
@@ -535,21 +535,25 @@ Things to note:
 
  * We only do this with a single-alternative case
 
-Note [Check the output scrutinee for okForSpec]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Note [Check the output scrutinee for exprIsHNF]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Consider this:
   case x of y {
     A -> ....(case y of alts)....
   }
+
 Because of the binder-swap, the inner case will get substituted to
-(case x of ..).  So when testing whether the scrutinee is
-okForSpeculation we must be careful to test the *result* scrutinee ('x'
-in this case), not the *input* one 'y'.  The latter *is* ok for
-speculation here, but the former is not -- and indeed we can't float
-the inner case out, at least not unless x is also evaluated at its
-binding site.  See Trac #5453.
+(case x of ..).  So when testing whether the scrutinee is in HNF we
+must be careful to test the *result* scrutinee ('x' in this case), not
+the *input* one 'y'.  The latter *is* in HNF here (because y is
+evaluated), but the former is not -- and indeed we can't float the
+inner case out, at least not unless x is also evaluated at its binding
+site.  See Trac #5453.
 
 That's why we apply exprIsHNF to scrut' and not to scrut.
+
+See Note [Floating single-alternative cases] for why
+we use exprIsHNF in the first place.
 -}
 
 lvlNonTailMFE :: LevelEnv             -- Level of in-scope names/tyvars
@@ -1117,7 +1121,7 @@ lvlBind env (AnnRec pairs)
         -- this, allocation rises significantly on some programs
         --
         -- We could elaborate it for the case where there are several
-        -- mutually functions, but it's quite a bit more complicated
+        -- mutually recursive functions, but it's quite a bit more complicated
         --
         -- This all seems a bit ad hoc -- sigh
     let (rhs_env, abs_vars_w_lvls) = lvlLamBndrs env dest_lvl abs_vars
@@ -1226,7 +1230,7 @@ lvlFloatRhs abs_vars dest_lvl env rec is_bot mb_join_arity rhs
 
 {- Note [Floating from a RHS]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-When float the RHS of a let-binding, we don't always want to apply
+When floating the RHS of a let-binding, we don't always want to apply
 lvlMFE to the body of a lambda, as we usually do, because the entire
 binding body is already going to the right place (dest_lvl).
 
@@ -1696,7 +1700,7 @@ cloneLetVars is_rec
           | otherwise = v
 
     zap_join | isTopLvl dest_lvl = zapJoinId
-             | otherwise         = \v -> v
+             | otherwise         = id
 
 add_id :: IdEnv ([Var], LevelledExpr) -> (Var, Var) -> IdEnv ([Var], LevelledExpr)
 add_id id_env (v, v1)

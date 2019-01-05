@@ -23,7 +23,9 @@ expect_broken_for_10037 = expect_broken_for(
      # e.g. prof and profllvm
 
 test('heapprof001',
-     [when(have_profiling(), extra_ways(extra_prof_ways)), extra_run_opts('7')],
+     [when(have_profiling(), extra_ways(extra_prof_ways)),
+      when(arch('i386'), expect_broken_for(15382, ['prof_hc_hb'])),
+      extra_run_opts('7')],
      compile_and_run, [''])
 
 test('T2592',
@@ -113,10 +115,10 @@ test('T5363', [], compile_and_run, [''])
 
 test('profinline001', [], compile_and_run, [''])
 
-# Skip T11627a and T11627b on Darwin as it tends to give us a very small stack
-# which the retainer profiler tends to overflow. See #15287 and #11627.
-test('T11627a', [ extra_ways(extra_prof_ways)
-                , when(opsys('darwin'), skip)
+test('T11627a', [ extra_ways(extra_prof_ways),
+                  # integer-simple has an extremely large representation and
+                  # consequently needs significantly more time
+                  when(have_library('integer-simple'), skip)
                 ],
      compile_and_run, [''])
 

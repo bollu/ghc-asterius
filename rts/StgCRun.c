@@ -405,9 +405,13 @@ StgRunIsImplementedInAssembler(void)
         "movq %%xmm15,136(%%rax)\n\t"
 #endif
 
+#if !defined(darwin_HOST_OS)
         /*
          * Let the unwinder know where we saved the registers
          * See Note [Unwinding foreign exports on x86-64].
+         *
+         * N.B. We don't support unwinding on Darwin due to
+         * various toolchain insanity.
          */
         ".cfi_def_cfa rsp, 0\n\t"
         ".cfi_offset rbx, %c2\n\t"
@@ -440,6 +444,7 @@ StgRunIsImplementedInAssembler(void)
 #error "RSP_DELTA too big"
 #endif
           "\n\t"
+#endif /* !defined(darwin_HOST_OS) */
 
         /*
          * Set BaseReg
@@ -512,8 +517,10 @@ StgRunIsImplementedInAssembler(void)
           "i"(RESERVED_C_STACK_BYTES + 32 /* r14 relative to cfa (rsp) */),
           "i"(RESERVED_C_STACK_BYTES + 40 /* r15 relative to cfa (rsp) */),
           "i"(RESERVED_C_STACK_BYTES + STG_RUN_STACK_FRAME_SIZE
-            /* rip relative to cfa */),
-          "i"((RSP_DELTA & 127) | (128 * ((RSP_DELTA >> 7) > 0)))
+              /* rip relative to cfa */)
+
+#if !defined(darwin_HOST_OS)
+          , "i"((RSP_DELTA & 127) | (128 * ((RSP_DELTA >> 7) > 0)))
             /* signed LEB128-encoded delta from rsp - byte 1 */
 #if (RSP_DELTA >> 7) > 0
           , "i"(((RSP_DELTA >> 7) & 127) | (128 * ((RSP_DELTA >> 14) > 0)))
@@ -530,6 +537,9 @@ StgRunIsImplementedInAssembler(void)
             /* signed LEB128-encoded delta from rsp - byte 4 */
 #endif
 #undef RSP_DELTA
+
+#endif /* !defined(darwin_HOST_OS) */
+
         );
         /*
          * See Note [Stack Alignment on X86]
@@ -622,55 +632,15 @@ StgRun(StgFunPtr f, StgRegTable *basereg) {
 
 #define STG_GLOBAL ".globl "
 
-#if defined(darwin_HOST_OS)
-#define STG_HIDDEN ".private_extern "
-#else
 #define STG_HIDDEN ".hidden "
-#endif
 
 #if defined(aix_HOST_OS)
 
 // implementation is in StgCRunAsm.S
 
-#elif defined(darwin_HOST_OS)
-void StgRunIsImplementedInAssembler(void)
-{
-#if HAVE_SUBSECTIONS_VIA_SYMBOLS
-            // if the toolchain supports deadstripping, we have to
-            // prevent it here (it tends to get confused here).
-        __asm__ volatile (".no_dead_strip _StgRunIsImplementedInAssembler\n");
-#endif
-        __asm__ volatile (
-                STG_GLOBAL STG_RUN "\n"
-                STG_HIDDEN STG_RUN "\n"
-                STG_RUN ":\n"
-                "\tmflr r0\n"
-                "\tbl saveFP # f14\n"
-                "\tstmw r13,-220(r1)\n"
-                "\tstwu r1,-%0(r1)\n"
-                "\tmr r27,r4\n" // BaseReg == r27
-                "\tmtctr r3\n"
-                "\tmr r12,r3\n"
-                "\tbctr\n"
-                ".globl _StgReturn\n"
-                "_StgReturn:\n"
-                "\tmr r3,r14\n"
-                "\tla r1,%0(r1)\n"
-                "\tlmw r13,-220(r1)\n"
-                "\tb restFP # f14\n"
-        : : "i"(RESERVED_C_STACK_BYTES+224 /*stack frame size*/));
-}
 #else
 
 // This version is for PowerPC Linux.
-
-// Differences from the Darwin/Mac OS X version:
-// *) Different Assembler Syntax
-// *) Doesn't use Register Saving Helper Functions (although they exist somewhere)
-// *) We may not access positive stack offsets
-//    (no "Red Zone" as in the Darwin ABI)
-// *) The Link Register is saved to a different offset in the caller's stack frame
-//    (Linux: 4(r1), Darwin 8(r1))
 
 static void GNUC3_ATTRIBUTE(used)
 StgRunIsImplementedInAssembler(void)

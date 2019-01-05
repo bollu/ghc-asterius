@@ -1093,24 +1093,7 @@ arithSeqEltType (Just fl) res_ty
 ************************************************************************
 -}
 
-data HsArg tm ty
-  = HsValArg tm   -- Argument is an ordinary expression     (f arg)
-  | HsTypeArg  ty -- Argument is a visible type application (f @ty)
-  | HsArgPar SrcSpan -- See Note [HsArgPar]
-
-{-
-Note [HsArgPar]
-A HsArgPar indicates that everything to the left of this in the argument list is
-enclosed in parentheses together with the function itself. It is necessary so
-that we can recreate the parenthesis structure in the original source after
-typechecking the arguments.
-
-The SrcSpan is the span of the original HsPar
-
-((f arg1) arg2 arg3) results in an input argument list of
-[HsValArg arg1, HsArgPar span1, HsValArg arg2, HsValArg arg3, HsArgPar span2]
-
--}
+-- HsArg is defined in HsTypes.hs
 
 wrapHsArgs :: (NoGhcTc (GhcPass id) ~ GhcRn)
            => LHsExpr (GhcPass id)
@@ -1120,11 +1103,6 @@ wrapHsArgs f []                   = f
 wrapHsArgs f (HsValArg  a : args) = wrapHsArgs (mkHsApp f a)     args
 wrapHsArgs f (HsTypeArg t : args) = wrapHsArgs (mkHsAppType f t) args
 wrapHsArgs f (HsArgPar sp : args) = wrapHsArgs (L sp $ HsPar noExt f) args
-
-instance (Outputable tm, Outputable ty) => Outputable (HsArg tm ty) where
-  ppr (HsValArg tm)  = text "HsValArg"  <+> ppr tm
-  ppr (HsTypeArg ty) = text "HsTypeArg" <+> ppr ty
-  ppr (HsArgPar sp)  = text "HsArgPar"  <+> ppr sp
 
 isHsValArg :: HsArg tm ty -> Bool
 isHsValArg (HsValArg {})  = True
@@ -1340,8 +1318,8 @@ tcArgs fun orig_fun_ty fun_orig orig_args herald
 
                     ; inner_ty <- zonkTcType inner_ty
                           -- See Note [Visible type application zonk]
-
                     ; let in_scope  = mkInScopeSet (tyCoVarsOfTypes [upsilon_ty, ty_arg])
+
                           insted_ty = substTyWithInScope in_scope [tv] [ty_arg] inner_ty
                                       -- NB: tv and ty_arg have the same kind, so this
                                       --     substitution is kind-respecting
@@ -1458,7 +1436,8 @@ tcSyntaxOp :: CtOrigin
            -> ([TcSigmaType] -> TcM a) -- ^ Type check any arguments
            -> TcM (a, SyntaxExpr GhcTcId)
 -- ^ Typecheck a syntax operator
--- The operator is always a variable at this stage (i.e. renamer output)
+-- The operator is a variable or a lambda at this stage (i.e. renamer
+-- output)
 tcSyntaxOp orig expr arg_tys res_ty
   = tcSyntaxOpGen orig expr arg_tys (SynType res_ty)
 
@@ -1470,17 +1449,14 @@ tcSyntaxOpGen :: CtOrigin
               -> SyntaxOpType
               -> ([TcSigmaType] -> TcM a)
               -> TcM (a, SyntaxExpr GhcTcId)
-tcSyntaxOpGen orig (SyntaxExpr { syn_expr = HsVar _ (L _ op) })
-              arg_tys res_ty thing_inside
-  = do { (expr, sigma) <- tcInferId op
+tcSyntaxOpGen orig op arg_tys res_ty thing_inside
+  = do { (expr, sigma) <- tcInferSigma $ noLoc $ syn_expr op
        ; (result, expr_wrap, arg_wraps, res_wrap)
            <- tcSynArgA orig sigma arg_tys res_ty $
               thing_inside
-       ; return (result, SyntaxExpr { syn_expr      = mkHsWrap expr_wrap expr
+       ; return (result, SyntaxExpr { syn_expr = mkHsWrap expr_wrap $ unLoc expr
                                     , syn_arg_wraps = arg_wraps
                                     , syn_res_wrap  = res_wrap }) }
-
-tcSyntaxOpGen _ other _ _ _ = pprPanic "tcSyntaxOp" (ppr other)
 
 {-
 Note [tcSynArg]

@@ -693,15 +693,6 @@ AC_DEFUN([FPTOOLS_SET_C_LD_FLAGS],
 
     esac
 
-    # If gcc knows about the stack protector, turn it off.
-    # Otherwise the stack-smash handler gets triggered.
-    echo 'int main(void) {return 0;}' > conftest.c
-    if $CC -c conftest.c -fno-stack-protector > /dev/null 2>&1
-    then
-        $2="$$2 -fno-stack-protector"
-    fi
-
-    rm -f conftest.c conftest.o
     AC_MSG_RESULT([done])
 ])
 
@@ -911,18 +902,22 @@ AS_IF([test "$fp_num1" $2 "$fp_num2"], [$4], [$5])[]dnl
 
 
 dnl
-dnl Check for Happy and version.
-dnl If there's no installed Happy, we look
-dnl for a happy source tree and point the build system at that instead.
+dnl Check for Happy and version:
+dnl
+dnl 1. Use happy specified in env var HAPPY
+dnl 2. Find happy in path
+dnl 3. Check happy version
+dnl
 dnl If you increase the minimum version requirement, please also update:
 dnl https://ghc.haskell.org/trac/ghc/wiki/Building/Preparation/Tools
 dnl
 AC_DEFUN([FPTOOLS_HAPPY],
-[AC_PATH_PROG(HappyCmd,happy,)
-
+[AC_PATH_PROG(HAPPY,[happy],)
+AC_SUBST(HappyCmd,$HAPPY)
 AC_CACHE_CHECK([for version of happy], fptools_cv_happy_version,
 changequote(, )dnl
-[if test x"$HappyCmd" != x; then
+[
+if test x"$HappyCmd" != x; then
    fptools_cv_happy_version=`"$HappyCmd" -v |
               grep 'Happy Version' | sed -e 's/Happy Version \([^ ]*\).*/\1/g'` ;
 else
@@ -941,13 +936,17 @@ AC_SUBST(HappyVersion)
 
 dnl
 dnl Check for Alex and version.
+dnl
+dnl 1. Use alex specified in env var ALEX
+dnl 2. Find alex in path
+dnl 3. Check alex version
+dnl
 dnl If you increase the minimum version requirement, please also update:
 dnl https://ghc.haskell.org/trac/ghc/wiki/Building/Preparation/Tools
 dnl
 AC_DEFUN([FPTOOLS_ALEX],
-[
-AC_PATH_PROG(AlexCmd,alex,)
-
+[AC_PATH_PROG(ALEX,[alex],)
+AC_SUBST(AlexCmd,$ALEX)
 AC_CACHE_CHECK([for version of alex], fptools_cv_alex_version,
 changequote(, )dnl
 [if test x"$AlexCmd" != x; then
@@ -2408,7 +2407,11 @@ AC_DEFUN([FIND_LD],[
                    FP_CC_LINKER_FLAG_TRY(bfd, $2) ;;
               "GNU gold"*)
                    FP_CC_LINKER_FLAG_TRY(gold, $2)
-                   LD_NO_GOLD=ld
+                   if test "$cross_compiling" = "yes"; then
+                       AC_MSG_NOTICE([Using ld.gold and assuming that it is not affected by binutils issue 22266]);
+                   else
+                       LD_NO_GOLD=ld;
+                   fi
                    ;;
               "LLD"*)
                    FP_CC_LINKER_FLAG_TRY(lld, $2) ;;

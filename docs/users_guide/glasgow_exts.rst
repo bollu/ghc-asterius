@@ -1642,8 +1642,11 @@ not the Prelude versions:
 -  An integer literal ``368`` means "``fromInteger (368::Integer)``",
    rather than "``Prelude.fromInteger (368::Integer)``".
 
--  Fractional literals are handed in just the same way, except that the
+-  Fractional literals are handled in just the same way, except that the
    translation is ``fromRational (3.68::Rational)``.
+
+-  String literals are also handled the same way, except that the
+   translation is ``fromString ("368"::String)``.
 
 -  The equality test in an overloaded numeric pattern uses whatever
    ``(==)`` is in scope.
@@ -8785,8 +8788,9 @@ Kind polymorphism
     :implies: :extension:`PolyKinds`, :extension:`DataKinds`, :extension:`KindSignatures`
     :since: 8.0.1
 
-    In the past this extension used to enable advanced type-level programming
-    techniques. Now it's a shorthand for a couple of other extensions.
+    The extension :extension:`TypeInType` is now deprecated: its sole effect is
+    to switch on :extension:`PolyKinds`
+    (and hence :extension:`KindSignatures`) and :extension:`DataKinds`.
 
 .. extension:: PolyKinds
     :shortdesc: Enable kind polymorphism.
@@ -10682,7 +10686,7 @@ Visible type application
 ========================
 
 .. extension:: TypeApplications
-    :shortdesc: Enable type application syntax.
+    :shortdesc: Enable type application syntax in terms and types.
 
     :since: 8.0.1
 
@@ -10702,6 +10706,10 @@ the full polymorphic type of the function is known. If the function
 is an identifier (the common case), its type is considered known only when
 the identifier has been given a type signature. If the identifier does
 not have a type signature, visible type application cannot be used.
+
+GHC also permits visible kind application, where users can declare the kind
+arguments to be instantiated in kind-polymorphic cases. Its usage parallels
+visible type application in the term level, as specified above.
 
 .. _inferred-vs-specified:
 
@@ -10860,8 +10868,8 @@ the rules in the subtler cases:
   application. If you want to specify only the second type argument to
   ``wurble``, then you can say ``wurble @_ @Int``.
   The first argument is a wildcard, just like in a partial type signature.
-  However, if used in a visible type application, it is *not*
-  necessary to specify :extension:`PartialTypeSignatures` and your
+  However, if used in a visible type application/visible kind application,
+  it is *not* necessary to specify :extension:`PartialTypeSignatures` and your
   code will not generate a warning informing you of the omitted type.
 
 The section in this manual on kind polymorphism describes how variables
@@ -12247,10 +12255,10 @@ Anonymous and named wildcards *can* occur on the left hand side of a
 type or data instance declaration;
 see :ref:`type-wildcards-lhs`.
 
-Anonymous wildcards are also allowed in visible type applications
-(:ref:`visible-type-application`). If you want to specify only the second type
-argument to ``wurble``, then you can say ``wurble @_ @Int`` where the first
-argument is a wildcard.
+Anonymous wildcards are also allowed in visible type applications/ visible kind
+applications (:ref:`visible-type-application`). If you want to specify only the
+second type argument to ``wurble``, then you can say ``wurble @_ @Int`` where
+the first argument is a wildcard.
 
 Standalone ``deriving`` declarations permit the use of a single,
 extra-constraints wildcard, like so: ::

@@ -170,6 +170,7 @@ Library
         typecheck
         types
         utils
+        hieFile
 
     -- we use an explicit Prelude
     Default-Extensions:
@@ -179,6 +180,11 @@ Library
         GhcPrelude
 
     Exposed-Modules:
+        HieTypes
+        HieDebug
+        HieBin
+        HieUtils
+        HieAst
         Ar
         FileCleanup
         DriverBkp
@@ -266,7 +272,6 @@ Library
         CodeGen.Platform.ARM64
         CodeGen.Platform.NoRegs
         CodeGen.Platform.PPC
-        CodeGen.Platform.PPC_Darwin
         CodeGen.Platform.SPARC
         CodeGen.Platform.X86
         CodeGen.Platform.X86_64

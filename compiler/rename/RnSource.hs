@@ -30,7 +30,8 @@ import RnEnv
 import RnUtils          ( HsDocContext(..), mapFvRn, bindLocalNames
                         , checkDupRdrNames, inHsDocContext, bindLocalNamesFV
                         , checkShadowedRdrNames, warnUnusedTypePatterns
-                        , extendTyVarEnvFVRn, newLocalBndrsRn )
+                        , extendTyVarEnvFVRn, newLocalBndrsRn
+                        , withHsDocContext )
 import RnUnbound        ( mkUnboundName, notInScopeErr )
 import RnNames
 import RnHsDoc          ( rnHsDoc, rnMbLHsDoc )
@@ -651,7 +652,7 @@ rnClsInstDecl (ClsInstDecl { cid_poly_ty = inst_ty, cid_binds = mbinds
        ; let (ktv_names, _, head_ty') = splitLHsInstDeclTy inst_ty'
        ; let cls = case hsTyGetAppHead_maybe head_ty' of
                      Nothing -> mkUnboundName (mkTcOccFS (fsLit "<class>"))
-                     Just (dL->L _ cls, _) -> cls
+                     Just (dL->L _ cls) -> cls
                      -- rnLHsInstType has added an error message
                      -- if hsTyGetAppHead_maybe fails
 
@@ -697,7 +698,7 @@ rnFamInstEqn :: HsDocContext
              -> Maybe (Name, [Name]) -- Nothing => not associated
                                      -- Just (cls,tvs) => associated,
                                      --   and gives class and tyvars of the
-                                     --   parent instance delc
+                                     --   parent instance decl
              -> [Located RdrName]    -- Kind variables from the equation's RHS
              -> FamInstEqn GhcPs rhs
              -> (HsDocContext -> rhs -> RnM (rhs', FreeVars))
@@ -709,7 +710,7 @@ rnFamInstEqn doc mb_cls rhs_kvars
                                , feqn_fixity = fixity
                                , feqn_rhs    = payload }}) rn_payload
   = do { tycon'   <- lookupFamInstName (fmap fst mb_cls) tycon
-       ; let pat_kity_vars_with_dups = extractHsTysRdrTyVarsDups pats
+       ; let pat_kity_vars_with_dups = extractHsTyArgRdrKiTyVarsDup pats
              -- Use the "...Dups" form because it's needed
              -- below to report unsed binder on the LHS
        ; let pat_kity_vars = rmDupsInRdrTyVars pat_kity_vars_with_dups
@@ -744,7 +745,7 @@ rnFamInstEqn doc mb_cls rhs_kvars
                  --  the user meant to bring in scope here. This is an explicit
                  --  forall, so we want fresh names, not class variables.
                  --  Thus: always pass Nothing
-                 do { (pats', pat_fvs) <- rnLHsTypes (FamPatCtx tycon) pats
+                 do { (pats', pat_fvs) <- rnLHsTypeArgs (FamPatCtx tycon) pats
                     ; (payload', rhs_fvs) <- rn_payload doc payload
 
                        -- Report unused binders on the LHS
@@ -779,16 +780,10 @@ rnFamInstEqn doc mb_cls rhs_kvars
 
                     ; return ((bndrs', pats', payload'), rhs_fvs `plusFV` pat_fvs) }
 
-       ; let anon_wcs = concatMap collectAnonWildCards pats'
-             all_ibs  = anon_wcs ++ all_imp_var_names
-                        -- all_ibs: include anonymous wildcards in the implicit
-                        -- binders In a type pattern they behave just like any
-                        -- other type variable except for being anoymous.  See
-                        -- Note [Wildcards in family instances]
-             all_fvs  = fvs `addOneFV` unLoc tycon'
-                        -- type instance => use, hence addOneFV
+       ; let all_fvs  = fvs `addOneFV` unLoc tycon'
+            -- type instance => use, hence addOneFV
 
-       ; return (HsIB { hsib_ext = all_ibs
+       ; return (HsIB { hsib_ext = all_imp_var_names -- Note [Wildcards in family instances]
                       , hsib_body
                           = FamEqn { feqn_ext    = noExt
                                    , feqn_tycon  = tycon'
@@ -800,22 +795,42 @@ rnFamInstEqn doc mb_cls rhs_kvars
 rnFamInstEqn _ _ _ (HsIB _ (XFamEqn _)) _ = panic "rnFamInstEqn"
 rnFamInstEqn _ _ _ (XHsImplicitBndrs _) _ = panic "rnFamInstEqn"
 
-rnTyFamInstDecl :: Maybe (Name, [Name])
+rnTyFamInstDecl :: Maybe (Name, [Name]) -- Just (cls,tvs) => associated,
+                                        --   and gives class and tyvars of
+                                        --   the parent instance decl
                 -> TyFamInstDecl GhcPs
                 -> RnM (TyFamInstDecl GhcRn, FreeVars)
 rnTyFamInstDecl mb_cls (TyFamInstDecl { tfid_eqn = eqn })
-  = do { (eqn', fvs) <- rnTyFamInstEqn mb_cls eqn
+  = do { (eqn', fvs) <- rnTyFamInstEqn mb_cls NotClosedTyFam eqn
        ; return (TyFamInstDecl { tfid_eqn = eqn' }, fvs) }
 
+-- | Tracks whether we are renaming an equation in a closed type family
+-- equation ('ClosedTyFam') or not ('NotClosedTyFam').
+data ClosedTyFamInfo
+  = NotClosedTyFam
+  | ClosedTyFam (Located RdrName) Name
+                -- The names (RdrName and Name) of the closed type family
+
 rnTyFamInstEqn :: Maybe (Name, [Name])
+               -> ClosedTyFamInfo
                -> TyFamInstEqn GhcPs
                -> RnM (TyFamInstEqn GhcRn, FreeVars)
-rnTyFamInstEqn mb_cls eqn@(HsIB { hsib_body = FamEqn { feqn_tycon = tycon
-                                                     , feqn_rhs   = rhs }})
+rnTyFamInstEqn mb_cls ctf_info
+    eqn@(HsIB { hsib_body = FamEqn { feqn_tycon = tycon
+                                   , feqn_rhs   = rhs }})
   = do { let rhs_kvs = extractHsTyRdrTyVarsKindVars rhs
-       ; rnFamInstEqn (TySynCtx tycon) mb_cls rhs_kvs eqn rnTySyn }
-rnTyFamInstEqn _ (HsIB _ (XFamEqn _)) = panic "rnTyFamInstEqn"
-rnTyFamInstEqn _ (XHsImplicitBndrs _) = panic "rnTyFamInstEqn"
+       ; (eqn'@(HsIB { hsib_body =
+                       FamEqn { feqn_tycon = dL -> L _ tycon' }}), fvs)
+           <- rnFamInstEqn (TySynCtx tycon) mb_cls rhs_kvs eqn rnTySyn
+       ; case ctf_info of
+           NotClosedTyFam -> pure ()
+           ClosedTyFam fam_rdr_name fam_name ->
+             checkTc (fam_name == tycon') $
+             withHsDocContext (TyFamilyCtx fam_rdr_name) $
+             wrongTyFamName fam_name tycon'
+       ; pure (eqn', fvs) }
+rnTyFamInstEqn _ _ (HsIB _ (XFamEqn _)) = panic "rnTyFamInstEqn"
+rnTyFamInstEqn _ _ (XHsImplicitBndrs _) = panic "rnTyFamInstEqn"
 
 rnTyFamDefltEqn :: Name
                 -> TyFamDefltEqn GhcPs
@@ -894,12 +909,13 @@ is the same as
     type family F a b :: *
     type instance F Int b = Int
 
-This is implemented as follows: during renaming anonymous wild cards
-'_' are given freshly generated names. These names are collected after
-renaming (rnFamInstEqn) and used to make new type variables during
-type checking (tc_fam_ty_pats). One should not confuse these wild
-cards with the ones from partial type signatures. The latter generate
-fresh meta-variables whereas the former generate fresh skolems.
+This is implemented as follows: Unnamed wildcards remain unchanged after
+the renamer, and then given fresh meta-variables during typechecking, and
+it is handled pretty much the same way as the ones in partial type signatures.
+We however don't want to emit hole constraints on wildcards in family
+instances, so we turn on PartialTypeSignatures and turn off warning flag to
+let typechecker know this.
+See related Note [Wildcards in visible kind application] in TcHsType.hs
 
 Note [Unused type variables in family instances]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1853,7 +1869,7 @@ rnFamDecl mb_cls (FamilyDecl { fdLName = tycon, fdTyVars = tyvars
                ; injectivity' <- traverse (rnInjectivityAnn tyvars' res_sig')
                                           injectivity
                ; return ( (tyvars', res_sig', injectivity') , fv_kind ) }
-       ; (info', fv2) <- rn_info info
+       ; (info', fv2) <- rn_info tycon' info
        ; return (FamilyDecl { fdExt = noExt
                             , fdLName = tycon', fdTyVars = tyvars'
                             , fdFixity = fixity
@@ -1865,14 +1881,18 @@ rnFamDecl mb_cls (FamilyDecl { fdLName = tycon, fdTyVars = tyvars
      kvs = extractRdrKindSigVars res_sig
 
      ----------------------
-     rn_info (ClosedTypeFamily (Just eqns))
-       = do { (eqns', fvs) <- rnList (rnTyFamInstEqn Nothing) eqns
-                                                    -- no class context,
+     rn_info :: Located Name
+             -> FamilyInfo GhcPs -> RnM (FamilyInfo GhcRn, FreeVars)
+     rn_info (dL->L _ fam_name) (ClosedTypeFamily (Just eqns))
+       = do { (eqns', fvs)
+                <- rnList (rnTyFamInstEqn Nothing (ClosedTyFam tycon fam_name))
+                                          -- no class context
+                          eqns
             ; return (ClosedTypeFamily (Just eqns'), fvs) }
-     rn_info (ClosedTypeFamily Nothing)
+     rn_info _ (ClosedTypeFamily Nothing)
        = return (ClosedTypeFamily Nothing, emptyFVs)
-     rn_info OpenTypeFamily = return (OpenTypeFamily, emptyFVs)
-     rn_info DataFamily     = return (DataFamily, emptyFVs)
+     rn_info _ OpenTypeFamily = return (OpenTypeFamily, emptyFVs)
+     rn_info _ DataFamily     = return (DataFamily, emptyFVs)
 rnFamDecl _ (XFamilyDecl _) = panic "rnFamDecl"
 
 rnFamResultSig :: HsDocContext
@@ -2025,6 +2045,12 @@ badAssocRhs ns
                   <+> text "out-of-scope variable" <> plural ns
                   <+> pprWithCommas (quotes . ppr) ns)
                2 (text "All such variables must be bound on the LHS"))
+
+wrongTyFamName :: Name -> Name -> SDoc
+wrongTyFamName fam_tc_name eqn_tc_name
+  = hang (text "Mismatched type name in type family instance.")
+       2 (vcat [ text "Expected:" <+> ppr fam_tc_name
+               , text "  Actual:" <+> ppr eqn_tc_name ])
 
 -----------------
 rnConDecls :: [LConDecl GhcPs] -> RnM ([LConDecl GhcRn], FreeVars)

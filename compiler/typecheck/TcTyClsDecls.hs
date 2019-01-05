@@ -18,7 +18,7 @@ module TcTyClsDecls (
         kcConDecl, tcConDecls, dataDeclChecks, checkValidTyCon,
         tcFamTyPats, tcTyFamInstEqn,
         tcAddTyFamInstCtxt, tcMkDataFamInstCtxt, tcAddDataFamInstCtxt,
-        unravelFamInstPats,
+        unravelFamInstPats, addConsistencyConstraints,
         wrongKindOfFamily
     ) where
 
@@ -1428,7 +1428,7 @@ tcDefaultAssocDecl fam_tc [dL->L loc (FamEqn { feqn_tycon = L _ tc_name
                  (wrongNumberOfParmsErr fam_arity)
 
        -- Typecheck RHS
-       ; let hs_pats = map hsLTyVarBndrToType exp_vars
+       ; let hs_pats = map (HsValArg . hsLTyVarBndrToType) exp_vars
 
           -- NB: Use tcFamTyPats, not bindTyClTyVars. The latter expects to get
           -- the LHsQTyVars used for declaring a tycon, but the names here
@@ -1733,15 +1733,14 @@ kcTyFamInstEqn tc_fam_tc
            , text "hsib_vars ="  <+> ppr imp_vars
            , text "feqn_bndrs =" <+> ppr mb_expl_bndrs
            , text "feqn_pats ="  <+> ppr hs_pats ])
-       ; checkTc (fam_name == eqn_tc_name)
-                 (wrongTyFamName fam_name eqn_tc_name)
           -- this check reports an arity error instead of a kind error; easier for user
-       ; checkTc (hs_pats `lengthIs` vis_arity) $
+       ; let vis_pats = numVisibleArgs hs_pats
+       ; checkTc (vis_pats == vis_arity) $
                   wrongNumberOfParmsErr vis_arity
        ; discardResult $
          bindImplicitTKBndrs_Q_Tv imp_vars $
          bindExplicitTKBndrs_Q_Tv AnyKind (mb_expl_bndrs `orElse` []) $
-         do { (_, res_kind) <- tcFamTyPats tc_fam_tc NotAssociated hs_pats
+         do { (_, res_kind) <- tcFamTyPats tc_fam_tc hs_pats
             ; tcCheckLHsType hs_rhs_ty res_kind }
              -- Why "_Tv" here?  Consider (Trac #14066
              --  type family Bar x y where
@@ -1750,7 +1749,6 @@ kcTyFamInstEqn tc_fam_tc
              -- During kind-checkig, a,b,c,d should be TyVarTvs and unify appropriately
     }
   where
-    fam_name  = tyConName tc_fam_tc
     vis_arity = length (tyConVisibleTyVars tc_fam_tc)
 
 kcTyFamInstEqn _ (dL->L _ (XHsImplicitBndrs _)) = panic "kcTyFamInstEqn"
@@ -1777,7 +1775,8 @@ tcTyFamInstEqn fam_tc mb_clsinfo
        -- If we wait until validity checking, we'll get kind errors
        -- below when an arity error will be much easier to understand.
        ; let vis_arity = length (tyConVisibleTyVars fam_tc)
-       ; checkTc (hs_pats `lengthIs` vis_arity) $
+             vis_pats  = numVisibleArgs hs_pats
+       ; checkTc (vis_pats == vis_arity) $
          wrongNumberOfParmsErr vis_arity
 
        ; (qtvs, pats, rhs_ty) <- tcTyFamInstEqnGuts fam_tc mb_clsinfo
@@ -1870,6 +1869,9 @@ tcTyFamInstEqnGuts fam_tc mb_clsinfo imp_vars exp_bndrs hs_pats hs_rhs_ty
                   bindImplicitTKBndrs_Q_Skol imp_vars          $
                   bindExplicitTKBndrs_Q_Skol AnyKind exp_bndrs $
                   do { (lhs_ty, rhs_kind) <- tc_lhs
+                       -- Ensure that the instance is consistent with its
+                       -- parent class (#16008)
+                     ; addConsistencyConstraints mb_clsinfo lhs_ty
                      ; rhs_ty <- tcCheckLHsType hs_rhs_ty rhs_kind
                      ; return (lhs_ty, rhs_ty) }
 
@@ -1900,7 +1902,7 @@ tcTyFamInstEqnGuts fam_tc mb_clsinfo imp_vars exp_bndrs hs_pats hs_rhs_ty
                                                            (tyConKind  fam_tc)
                 ; return (mkTyConApp fam_tc args, rhs_kind) }
            | otherwise
-           = tcFamTyPats fam_tc mb_clsinfo hs_pats
+           = tcFamTyPats fam_tc hs_pats
 
 {- Note [Apparently-nullary families]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1932,11 +1934,11 @@ Inferred quantifiers always come first.
 
 
 -----------------
-tcFamTyPats :: TyCon -> AssocInstInfo
+tcFamTyPats :: TyCon
             -> HsTyPats GhcRn                -- Patterns
             -> TcM (TcType, TcKind)          -- (lhs_type, lhs_kind)
 -- Used for both type and data families
-tcFamTyPats fam_tc mb_clsinfo hs_pats
+tcFamTyPats fam_tc hs_pats
   = do { traceTc "tcFamTyPats {" $
          vcat [ ppr fam_tc <+> dcolon <+> ppr fam_kind
               , text "arity:" <+> ppr fam_arity
@@ -1944,15 +1946,16 @@ tcFamTyPats fam_tc mb_clsinfo hs_pats
 
        ; let fun_ty = mkTyConApp fam_tc []
 
-       ; (fam_app, res_kind) <- tcInferApps typeLevelMode lhs_fun fun_ty
+       ; (fam_app, res_kind) <- unsetWOptM Opt_WarnPartialTypeSignatures $
+                                setXOptM LangExt.PartialTypeSignatures $
+                                -- See Note [Wildcards in family instances] in
+                                -- RnSource.hs
+                                tcInferApps typeLevelMode lhs_fun fun_ty
                                             fam_kind hs_pats
 
        ; traceTc "End tcFamTyPats }" $
          vcat [ ppr fam_tc <+> dcolon <+> ppr fam_kind
               , text "res_kind:" <+> ppr res_kind ]
-
-       -- Ensure that the instance is consistent its parent class
-       ; addConsistencyConstraints mb_clsinfo fam_app
 
        ; return (fam_app, res_kind) }
   where
@@ -3609,7 +3612,7 @@ checkValidRoles tc
     report_error doc
       = addErrTc $ vcat [text "Internal error in role inference:",
                          doc,
-                         text "Please report this as a GHC bug: http://www.haskell.org/ghc/reportabug"]
+                         text "Please report this as a GHC bug:  https://www.haskell.org/ghc/reportabug"]
 
 {-
 ************************************************************************
@@ -3812,12 +3815,6 @@ defaultAssocKindErr :: TyCon -> SDoc
 defaultAssocKindErr fam_tc
   = text "Kind mis-match on LHS of default declaration for"
     <+> quotes (ppr fam_tc)
-
-wrongTyFamName :: Name -> Name -> SDoc
-wrongTyFamName fam_tc_name eqn_tc_name
-  = hang (text "Mismatched type name in type family instance.")
-       2 (vcat [ text "Expected:" <+> ppr fam_tc_name
-               , text "  Actual:" <+> ppr eqn_tc_name ])
 
 badRoleAnnot :: Name -> Role -> Role -> SDoc
 badRoleAnnot var annot inferred

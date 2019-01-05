@@ -18,56 +18,62 @@ if you'd like to start using Hadrian for building GHC.
 Your first build
 ----------------
 
-Beware, the build system is in the alpha development phase. Things are shaky and sometimes
-break; there are numerous [known issues][issues]. Not afraid? Then put on the helmet and
-run the following command from root of the GHC tree:
+Hadrian has not entirely caught up with the make build system. Not afraid?
+Then put on the helmet and run the following commands from the root of the GHC
+tree:
 
 ```
+./boot && ./configure
 hadrian/build.sh -j
 ```
 
 or on Windows:
 
 ```
+./boot && ./configure --enable-tarballs-autodownload
 hadrian/build.bat -j
 ```
 
-Here flag `-j` enables parallelism and is optional. We will further refer to the build script
-simply as `build`. Note that Hadrian can also run the `boot` and `configure` scripts
-automatically if you pass the flag `--configure`, or simply `-c`. See the overview of
-command line flags below.
+Here flag `-j` enables parallelism and is optional. We will further refer to the
+build script simply as `build`. Note that Hadrian can also run the `boot` and
+`configure` scripts automatically for you if you pass the flag `--configure`,
+or simply `-c`. See the overview of command line flags below.
 
 Notes:
 
-* If the default build script doesn't work, you might want to give a try to another one, e.g. based
-on Cabal sandboxes (`build.cabal.*`), Stack (`build.stack.*`) or the global package database
-(`build.global-db.*`). Also see [instructions for building GHC on Windows using Stack][windows-build].
+* If the default build script doesn't work, you might want to give a try to
+another one, e.g. based on Cabal sandboxes (`build.cabal.*`) or
+Stack (`build.stack.*`). Also see
+[instructions for building GHC on Windows using Stack][windows-build].
 
-* Hadrian is written in Haskell and depends on `shake` (plus a few packages that `shake` depends on),
-`mtl`, `quickcheck`, and GHC core libraries.
 
-* If you have never built GHC before, start with the [preparation guide][ghc-preparation].
+* Hadrian is written in Haskell and depends on `shake` (plus a few packages that
+`shake` depends on), `mtl`, `quickcheck`, and GHC core libraries.
+
+* If you have never built GHC before, start with the
+[preparation guide][ghc-preparation].
 
 Using the build system
 ----------------------
-Once your first build is successful, simply run `build` to rebuild. Build results
-are placed into `_build` and `inplace` directories.
+Once your first build is successful, simply run `build` to rebuild after some
+changes. Build results are placed into `_build` by default.
 
 #### Command line flags
 
 In addition to standard Shake flags (try `--help`), the build system
 currently supports several others:
 
-* `--build-root=PATH` or `-oPATH`: specify the directory in which you want to store all
-build products. By default Hadrian builds everything in the `_build/` subdirectory of
-the GHC source tree. Unlike the Make build system, Hadrian doesn't have any "inplace"
-logic left anymore. This option is therefore useful for GHC developers who want to build
-GHC in different ways or at different commits, from the same source directory, and have
-the build products sit in different, isolated folders.
+* `--build-root=PATH` or `-oPATH`: specify the directory in which you want to
+store all build products. By default Hadrian builds everything in the `_build/`
+subdirectory of the GHC source tree. Unlike the Make build system, Hadrian
+doesn't have any "inplace" logic left anymore. This option is therefore useful
+for GHC developers who want to build GHC in different ways or at different
+commits, from the same source directory, and have the build products sit in
+different, isolated folders.
 
 * `--configure` or `-c`: use this flag to run the `boot` and `configure` scripts
-automatically, so that you don't have to remember to run them manually as you normally
-do when using Make (typically only in the first build):
+automatically, so that you don't have to remember to run them manually as you
+normally do when using Make (typically only in the first build):
     ```bash
     ./boot
     ./configure # On Windows run ./configure --enable-tarballs-autodownload
@@ -110,6 +116,45 @@ by Shake oracles.
 The Make-based build system uses `mk/build.mk` to specify user build settings. We
 use `hadrian/UserSettings.hs` for the same purpose, see [documentation](doc/user-settings.md).
 
+#### Building libraries and executables
+
+You can build a specific library or executable for a given stage by doing
+`build stage<N>:<lib|exe>:<package name>`. Examples:
+
+``` sh
+# build the stage 1 GHC compiler (the executable), the binary will be placed
+# under _build/stage0/bin/ghc (because it is built by the stage0 compiler).
+build stage1:exe:ghc-bin
+
+# build the stage 2 GHC compiler, the binary will be placed under
+# _build/stage1/bin/ghc (because it is built by the stage1 compiler).
+build stage2:exe:ghc-bin
+
+# build the ghc library with the boot compiler, and register it
+# in the package database under _build/stage0/lib.
+build stage0:lib:ghc
+
+# build the Cabal library with the stage 1 compiler and register it
+# in the package database under _build/stage1/lib.
+
+# build the text library with the stage 2 compiler and register it
+# in the package database under _build/stage2/lib.
+build stage2:lib:text
+
+# build the stage 2 haddock executable and place the program under
+# _build/stage1/haddock.
+build stage2:exe:haddock
+```
+
+#### Testing
+
+To run GHC's testsuite, use `build test`. See
+[doc/testsuite.md](doc/testsuite.md) to learn about all the options
+you can use to mimic what the Make build system offers.
+
+`build selftest` runs tests of the build system. Current test coverage
+is close to zero (see [#197][test-issue]).
+
 #### Clean and full rebuild
 
 * `build clean` removes all build artefacts.
@@ -138,29 +183,10 @@ $ ./configure [--prefix=PATH] && make install
 
 workflow, for now.
 
-#### Testing
-
-* `build validate` runs GHC tests by simply executing `make fast` in `testsuite/tests`
-directory. This can be used instead of `sh validate --fast --no-clean` in the existing
-build system. Note: this will rebuild Stage2 GHC, `ghc-pkg` and `hpc` if they are out of date.
-
-* `build test` runs GHC tests by calling the `testsuite/driver/runtests.py` python
-script with appropriate flags. The current implementation is limited and cannot
-replace the `validate` script (see [#187][validation-issue]).
-
-* `build selftest` runs tests of the build system. Current test coverage is close to
-zero (see [#197][test-issue]).
-
 Troubleshooting
 ---------------
 
 Here are a few simple suggestions that might help you fix the build:
-
-* The Hadrian submodule in GHC is occasionally behind the master branch of this repository,
-  which contains most recent bug fixes. To switch to the most recent version of Hadrian,
-  run `git pull https://github.com/snowleopard/hadrian.git`. Beware: the most recent version
-  contains the most recent bugs too! If this works, please raise an issue and we will try to
-  push the changes to the GHC submodule as soon as possible.
   
 * Hadrian is occasionally broken by changes in GHC. If this happens, you might want to switch
   to an earlier GHC commit.
@@ -178,7 +204,6 @@ Current limitations
 The new build system still lacks many important features:
 * Validation is not implemented: [#187][validation-issue].
 * Dynamic linking on Windows is not supported [#343][dynamic-windows-issue].
-* There is no support for binary distribution: [#219][bin-dist-issue].
 
 Check out [milestones] to see when we hope to resolve the above limitations.
 
