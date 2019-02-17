@@ -1,6 +1,6 @@
 @echo off
 set CABAL=cabal
-set CABFLAGS=--disable-documentation --disable-profiling
+set CABFLAGS=--disable-documentation --disable-profiling --disable-library-profiling
 
 rem It is currently more robust to pass Cabal an absolute path to the project file.
 set PROJ="%CD%/hadrian/cabal.project"
@@ -31,8 +31,8 @@ if %CABMAJOR% equ 2 (
 )
 if %_cabal_ok% equ 1 (
     "%CABAL%" --project-file=%PROJ% new-build %CABFLAGS% -j exe:hadrian
-    "%CABAL%" --project-file=%PROJ% new-run   %CABFLAGS%    exe:hadrian -- ^
-        --lint ^
+    rem use new-exec instead of new-run to make sure that the build-tools (alex & happy) are in PATH
+    "%CABAL%" --project-file=%PROJ% new-exec  %CABFLAGS%    hadrian -- ^
         --directory "%CD%" ^
         %*
 ) else (

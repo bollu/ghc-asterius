@@ -425,26 +425,26 @@ dictSelRule val_index n_ty_args _ id_unf _ args
 mkDataConWorkId :: Name -> DataCon -> Id
 mkDataConWorkId wkr_name data_con
   | isNewTyCon tycon
-  = mkGlobalId (DataConWrapId data_con) wkr_name nt_wrap_ty nt_work_info
+  = mkGlobalId (DataConWrapId data_con) wkr_name wkr_ty nt_work_info
   | otherwise
-  = mkGlobalId (DataConWorkId data_con) wkr_name alg_wkr_ty wkr_info
+  = mkGlobalId (DataConWorkId data_con) wkr_name wkr_ty alg_wkr_info
 
   where
-    tycon = dataConTyCon data_con
+    tycon  = dataConTyCon data_con  -- The representation TyCon
+    wkr_ty = dataConRepType data_con
 
         ----------- Workers for data types --------------
-    alg_wkr_ty = dataConRepType data_con
-    wkr_arity = dataConRepArity data_con
-    wkr_info  = noCafIdInfo
-                `setArityInfo`          wkr_arity
-                `setStrictnessInfo`     wkr_sig
-                `setUnfoldingInfo`      evaldUnfolding  -- Record that it's evaluated,
-                                                        -- even if arity = 0
-                `setLevityInfoWithType` alg_wkr_ty
-                  -- NB: unboxed tuples have workers, so we can't use
-                  -- setNeverLevPoly
+    alg_wkr_info = noCafIdInfo
+                   `setArityInfo`          wkr_arity
+                   `setStrictnessInfo`     wkr_sig
+                   `setUnfoldingInfo`      evaldUnfolding  -- Record that it's evaluated,
+                                                           -- even if arity = 0
+                   `setLevityInfoWithType` wkr_ty
+                     -- NB: unboxed tuples have workers, so we can't use
+                     -- setNeverLevPoly
 
-    wkr_sig = mkClosedStrictSig (replicate wkr_arity topDmd) (dataConCPR data_con)
+    wkr_arity = dataConRepArity data_con
+    wkr_sig   = mkClosedStrictSig (replicate wkr_arity topDmd) (dataConCPR data_con)
         --      Note [Data-con worker strictness]
         -- Notice that we do *not* say the worker Id is strict
         -- even if the data constructor is declared strict
@@ -465,20 +465,21 @@ mkDataConWorkId wkr_name data_con
         -- not from the worker Id.
 
         ----------- Workers for newtypes --------------
-    (nt_tvs, _, nt_arg_tys, _) = dataConSig data_con
-    res_ty_args  = mkTyCoVarTys nt_tvs
-    nt_wrap_ty   = dataConUserType data_con
+    univ_tvs = dataConUnivTyVars data_con
+    arg_tys  = dataConRepArgTys  data_con  -- Should be same as dataConOrigArgTys
     nt_work_info = noCafIdInfo          -- The NoCaf-ness is set by noCafIdInfo
                   `setArityInfo` 1      -- Arity 1
                   `setInlinePragInfo`     alwaysInlinePragma
                   `setUnfoldingInfo`      newtype_unf
-                  `setLevityInfoWithType` nt_wrap_ty
-    id_arg1      = mkTemplateLocal 1 (head nt_arg_tys)
+                  `setLevityInfoWithType` wkr_ty
+    id_arg1      = mkTemplateLocal 1 (head arg_tys)
+    res_ty_args  = mkTyCoVarTys univ_tvs
     newtype_unf  = ASSERT2( isVanillaDataCon data_con &&
-                            isSingleton nt_arg_tys, ppr data_con  )
+                            isSingleton arg_tys
+                          , ppr data_con  )
                               -- Note [Newtype datacons]
                    mkCompulsoryUnfolding $
-                   mkLams nt_tvs $ Lam id_arg1 $
+                   mkLams univ_tvs $ Lam id_arg1 $
                    wrapNewTypeBody tycon res_ty_args (Var id_arg1)
 
 dataConCPR :: DataCon -> DmdResult
@@ -616,6 +617,8 @@ mkDataConRep dflags fam_envs wrap_name mb_bangs data_con
                      , dcr_boxer   = mk_boxer boxers
                      , dcr_arg_tys = rep_tys
                      , dcr_stricts = rep_strs
+                       -- For newtypes, dcr_bangs is always [HsLazy].
+                       -- See Note [HsImplBangs for newtypes].
                      , dcr_bangs   = arg_ibangs }) }
 
   where
@@ -637,11 +640,16 @@ mkDataConRep dflags fam_envs wrap_name mb_bangs data_con
              -- Because we are going to apply the eq_spec args manually in the
              -- wrapper
 
-    arg_ibangs =
-      case mb_bangs of
-        Nothing    -> zipWith (dataConSrcToImplBang dflags fam_envs)
-                              orig_arg_tys orig_bangs
-        Just bangs -> bangs
+    new_tycon = isNewTyCon tycon
+    arg_ibangs
+      | new_tycon
+      = ASSERT( isSingleton orig_arg_tys )
+        [HsLazy] -- See Note [HsImplBangs for newtypes]
+      | otherwise
+      = case mb_bangs of
+          Nothing    -> zipWith (dataConSrcToImplBang dflags fam_envs)
+                                orig_arg_tys orig_bangs
+          Just bangs -> bangs
 
     (rep_tys_w_strs, wrappers)
       = unzip (zipWith dataConArgRep all_arg_tys (ev_ibangs ++ arg_ibangs))
@@ -650,7 +658,7 @@ mkDataConRep dflags fam_envs wrap_name mb_bangs data_con
     (rep_tys, rep_strs) = unzip (concat rep_tys_w_strs)
 
     wrapper_reqd =
-        (not (isNewTyCon tycon)
+        (not new_tycon
                      -- (Most) newtypes have only a worker, with the exception
                      -- of some newtypes written with GADT syntax. See below.
          && (any isBanged (ev_ibangs ++ arg_ibangs)
@@ -774,6 +782,29 @@ wrappers! After all, a newtype can also be written with GADT syntax:
 Again, this needs a wrapper data con to reorder the type variables. It does
 mean that this newtype constructor requires another level of indirection when
 being called, but the inliner should make swift work of that.
+
+Note [HsImplBangs for newtypes]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Most of the time, we use the dataConSrctoImplBang function to decide what
+strictness/unpackedness to use for the fields of a data type constructor. But
+there is an exception to this rule: newtype constructors. You might not think
+that newtypes would pose a challenge, since newtypes are seemingly forbidden
+from having strictness annotations in the first place. But consider this
+(from Trac #16141):
+
+  {-# LANGUAGE StrictData #-}
+  {-# OPTIONS_GHC -O #-}
+  newtype T a b where
+    MkT :: forall b a. Int -> T a b
+
+Because StrictData (plus optimization) is enabled, invoking
+dataConSrcToImplBang would sneak in and unpack the field of type Int to Int#!
+This would be disastrous, since the wrapper for `MkT` uses a coercion involving
+Int, not Int#.
+
+Bottom line: dataConSrcToImplBang should never be invoked for newtypes. In the
+case of a newtype constructor, we simply hardcode its dcr_bangs field to
+[HsLazy].
 -}
 
 -------------------------
@@ -781,7 +812,11 @@ newLocal :: Type -> UniqSM Var
 newLocal ty = do { uniq <- getUniqueM
                  ; return (mkSysLocalOrCoVar (fsLit "dt") uniq ty) }
 
--- | Unpack/Strictness decisions from source module
+-- | Unpack/Strictness decisions from source module.
+--
+-- This function should only ever be invoked for data constructor fields, and
+-- never on the field of a newtype constructor.
+-- See @Note [HsImplBangs for newtypes]@.
 dataConSrcToImplBang
    :: DynFlags
    -> FamInstEnvs
@@ -1229,10 +1264,14 @@ proxyHashId
        (noCafIdInfo `setUnfoldingInfo` evaldUnfolding -- Note [evaldUnfoldings]
                     `setNeverLevPoly`  ty )
   where
-    -- proxy# :: forall k (a:k). Proxy# k a
-    bndrs   = mkTemplateKiTyVars [liftedTypeKind] (\ks -> ks)
-    [k,t]   = mkTyVarTys bndrs
-    ty      = mkSpecForAllTys bndrs (mkProxyPrimTy k t)
+    -- proxy# :: forall {k} (a:k). Proxy# k a
+    --
+    -- The visibility of the `k` binder is Inferred to match the type of the
+    -- Proxy data constructor (#16293).
+    [kv,tv] = mkTemplateKiTyVars [liftedTypeKind] id
+    kv_ty   = mkTyVarTy kv
+    tv_ty   = mkTyVarTy tv
+    ty      = mkInvForAllTy kv $ mkSpecForAllTy tv $ mkProxyPrimTy kv_ty tv_ty
 
 ------------------------------------------------
 unsafeCoerceId :: Id

@@ -24,7 +24,8 @@ module Base (
     -- * Paths
     hadrianPath, configPath, configFile, sourcePath, shakeFilesDir,
     generatedDir, generatedPath, stageBinPath, stageLibPath, templateHscPath,
-    ghcDeps, relativePackageDbPath, packageDbPath, packageDbStamp, ghcSplitPath
+    ghcDeps, haddockDeps, relativePackageDbPath, packageDbPath, packageDbStamp,
+    ghcSplitPath
     ) where
 
 import Control.Applicative
@@ -33,10 +34,11 @@ import Control.Monad.Reader
 import Data.List.Extra
 import Data.Maybe
 import Data.Semigroup
-import Development.Shake hiding (parallel, unit, (*>), Normal)
+import Development.Shake hiding (unit, (*>), Normal)
 import Development.Shake.Classes
 import Development.Shake.FilePath
 import Development.Shake.Util
+import Hadrian.Oracles.DirectoryContents
 import Hadrian.Utilities
 import Hadrian.Package
 
@@ -83,9 +85,9 @@ generatedPath :: Action FilePath
 generatedPath = buildRoot <&> (-/- generatedDir)
 
 -- | Path to the package database for a given build stage, relative to the build
--- root. Note that @StageN@, where @N > 1@, uses the 'Stage1' package database.
+-- root.
 relativePackageDbPath :: Stage -> FilePath
-relativePackageDbPath stage = stageString (min stage Stage1) -/- "lib/package.conf.d"
+relativePackageDbPath stage = stageString stage -/- "lib/package.conf.d"
 
 -- | Path to the package database used in a given 'Stage', including
 --   the build root.
@@ -113,6 +115,17 @@ ghcDeps stage = mapM (\f -> stageLibPath stage <&> (-/- f))
       , "llvm-passes"
       , "platformConstants"
       , "settings" ]
+
+-- | Files the `haddock` binary depends on
+haddockDeps :: Stage -> Action [FilePath]
+haddockDeps stage = do
+    let resdir = "utils/haddock/haddock-api/resources"
+    latexResources <- directoryContents matchAll (resdir -/- "latex")
+    htmlResources  <- directoryContents matchAll (resdir -/- "html")
+
+    haddockLib <- stageLibPath stage
+    return $ [ haddockLib -/- makeRelative resdir f
+             | f <- latexResources ++ htmlResources ]
 
 -- ref: utils/hsc2hs/ghc.mk
 -- | Path to 'hsc2hs' template.

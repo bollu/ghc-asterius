@@ -114,7 +114,7 @@ data Literal
 
   | LitString  ByteString       -- ^ A string-literal: stored and emitted
                                 -- UTF-8 encoded, we'll arrange to decode it
-                                -- at runtime.  Also emitted with a @'\0'@
+                                -- at runtime.  Also emitted with a @\'\\0\'@
                                 -- terminator. Create with 'mkLitString'
 
   | LitNullAddr                 -- ^ The @NULL@ pointer, the only pointer value
@@ -418,7 +418,7 @@ mkLitChar = LitChar
 -- e.g. some of the \"error\" functions in GHC.Err such as @GHC.Err.runtimeError@
 mkLitString :: String -> Literal
 -- stored UTF-8 encoded
-mkLitString s = LitString (fastStringToByteString $ mkFastString s)
+mkLitString s = LitString (bytesFS $ mkFastString s)
 
 mkLitInteger :: Integer -> Type -> Literal
 mkLitInteger x ty = LitNumber LitNumInteger x ty

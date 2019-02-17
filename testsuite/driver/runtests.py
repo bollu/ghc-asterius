@@ -27,6 +27,7 @@ from testutil import getStdout, Watcher, str_warn, str_info
 from testglobals import getConfig, ghc_env, getTestRun, TestOptions, brokens
 from perf_notes import MetricChange, inside_git_repo, is_worktree_dirty
 from junit import junit
+import cpu_features
 
 # Readline sometimes spews out ANSI escapes for some values of TERM,
 # which result in test failures. Thus set TERM to a nice, simple, safe
@@ -274,6 +275,12 @@ t.start_time = time.localtime()
 
 print('Beginning test run at', time.strftime("%c %Z",t.start_time))
 
+# For reference
+try:
+    print('Detected CPU features: ', cpu_features.get_cpu_features())
+except Exception as e:
+    print('Failed to detect CPU features: ', e)
+
 sys.stdout.flush()
 # we output text, which cannot be unbuffered
 sys.stdout = os.fdopen(sys.__stdout__.fileno(), "w")
@@ -372,18 +379,36 @@ else:
     new_metrics = [metric for (change, metric) in t.metrics if change == MetricChange.NewMetric]
     if any(new_metrics):
         if canGitStatus:
-            reason = 'the previous git commit doesn\'t have recorded metrics for the following tests.' + \
-                  ' If the tests exist on the previous commit, then check it out and run the tests to generate the missing metrics.'
+            reason = 'a baseline (expected value) cannot be recovered from' + \
+                ' previous git commits. This may be due to HEAD having' + \
+                ' new tests or having expected changes, the presence of' + \
+                ' expected changes since the last run of the tests, and/or' + \
+                ' the latest test run being too old.'
+            fix = 'If the tests exist on the previous' + \
+                ' commit (And are configured to run with the same ways),' + \
+                ' then check out that commit and run the tests to generate' + \
+                ' the missing metrics. Alternatively, a baseline may be' + \
+                ' recovered from ci results once fetched:\n\n' + \
+                spacing + 'git fetch ' + \
+                  'https://gitlab.haskell.org/ghc/ghc-performance-notes.git' + \
+                  ' refs/notes/perf:refs/notes/' + Perf.CiNamespace
         else:
-            reason = 'this is not a git repo so the previous git commit\'s metrics cannot be loaded from git notes:'
+            reason = "this is not a git repo so the previous git commit's" + \
+                     " metrics cannot be loaded from git notes:"
+            fix = ""
         print()
-        print(str_warn('New Metrics') + ' these metrics trivially pass because ' + reason)
-        print(spacing + ('\n' + spacing).join(set([metric.test for metric in new_metrics])))
+        print(str_warn('Missing Baseline Metrics') + \
+                ' these metrics trivially pass because ' + reason)
+        print(spacing + (' ').join(set([metric.test for metric in new_metrics])))
+        if fix != "":
+            print()
+            print(fix)
 
     # Inform of how to accept metric changes.
     if (len(t.unexpected_stat_failures) > 0):
         print()
-        print(str_info("Some stats have changed") + " If this is expected, allow changes by appending the git commit message with this:")
+        print(str_info("Some stats have changed") + " If this is expected, " + \
+            "allow changes by appending the git commit message with this:")
         print('-' * 25)
         print(Perf.allow_changes_string(t.metrics))
         print('-' * 25)
@@ -399,8 +424,9 @@ else:
     elif canGitStatus and any(stats):
         if is_worktree_dirty():
             print()
-            print(str_warn('Working Tree is Dirty') + ' performance metrics will not be saved.' + \
-                                    ' Commit changes or use --metrics-file to save metrics to a file.')
+            print(str_warn('Performance Metrics NOT Saved') + \
+                ' working tree is dirty. Commit changes or use ' + \
+                '--metrics-file to save metrics to a file.')
         else:
             Perf.append_perf_stat(stats)
 

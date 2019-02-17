@@ -15,7 +15,6 @@ module RnTypes (
         rnHsKind, rnLHsKind, rnLHsTypeArgs,
         rnHsSigType, rnHsWcType,
         HsSigWcTypeScoping(..), rnHsSigWcType, rnHsSigWcTypeScoped,
-        rnLHsInstType,
         newTyVarNameRn,
         rnConDeclFields,
         rnLTyVar,
@@ -45,9 +44,8 @@ import DynFlags
 import HsSyn
 import RnHsDoc          ( rnLHsDoc, rnMbLHsDoc )
 import RnEnv
-import RnUnbound        ( perhapsForallMsg )
 import RnUtils          ( HsDocContext(..), withHsDocContext, mapFvRn
-                        , pprHsDocContext, bindLocalNamesFV
+                        , pprHsDocContext, bindLocalNamesFV, typeAppErr
                         , newLocalBndrRn, checkDupRdrNames, checkShadowedRdrNames )
 import RnFixity         ( lookupFieldFixityRn, lookupFixityRn
                         , lookupTyFixityRn )
@@ -374,12 +372,6 @@ rnImplicitBndrs bind_free_tvs
            , text "Suggested fix: add" <+>
              quotes (text "forall" <+> hsep (map ppr kvs) <> char '.') ]
 
-rnLHsInstType :: SDoc -> LHsSigType GhcPs -> RnM (LHsSigType GhcRn, FreeVars)
--- Rename the type in an instance.
--- The 'doc_str' is "an instance declaration".
--- Do not try to decompose the inst_ty in case it is malformed
-rnLHsInstType doc inst_ty = rnHsSigType (GenericCtx doc) inst_ty
-
 {- ******************************************************
 *                                                       *
            LHsType and HsType
@@ -493,9 +485,9 @@ rnLHsTypeArg :: HsDocContext -> LHsTypeArg GhcPs
 rnLHsTypeArg ctxt (HsValArg ty)
    = do { (tys_rn, fvs) <- rnLHsType ctxt ty
         ; return (HsValArg tys_rn, fvs) }
-rnLHsTypeArg ctxt (HsTypeArg ki)
+rnLHsTypeArg ctxt (HsTypeArg l ki)
    = do { (kis_rn, fvs) <- rnLHsKind ctxt ki
-        ; return (HsTypeArg kis_rn, fvs) }
+        ; return (HsTypeArg l kis_rn, fvs) }
 rnLHsTypeArg _ (HsArgPar sp)
    = return (HsArgPar sp, emptyFVs)
 
@@ -643,12 +635,12 @@ rnHsTyKi env (HsAppTy _ ty1 ty2)
        ; (ty2', fvs2) <- rnLHsTyKi env ty2
        ; return (HsAppTy noExt ty1' ty2', fvs1 `plusFV` fvs2) }
 
-rnHsTyKi env (HsAppKindTy _ ty k)
+rnHsTyKi env (HsAppKindTy l ty k)
   = do { kind_app <- xoptM LangExt.TypeApplications
-       ; unless kind_app (addErr (typeAppErr k))
+       ; unless kind_app (addErr (typeAppErr "kind" k))
        ; (ty', fvs1) <- rnLHsTyKi env ty
        ; (k', fvs2) <- rnLHsTyKi (env {rtke_level = KindLevel }) k
-       ; return (HsAppKindTy noExt ty' k', fvs1 `plusFV` fvs2) }
+       ; return (HsAppKindTy l ty' k', fvs1 `plusFV` fvs2) }
 
 rnHsTyKi env t@(HsIParamTy _ n ty)
   = do { notInKinds env t
@@ -1470,17 +1462,8 @@ warnUnusedForAll in_doc (dL->L loc tv) used_names
 opTyErr :: Outputable a => RdrName -> a -> SDoc
 opTyErr op overall_ty
   = hang (text "Illegal operator" <+> quotes (ppr op) <+> ptext (sLit "in type") <+> quotes (ppr overall_ty))
-         2 extra
-  where
-    extra | op == dot_tv_RDR
-          = perhapsForallMsg
-          | otherwise
-          = text "Use TypeOperators to allow operators in types"
+         2 (text "Use TypeOperators to allow operators in types")
 
-typeAppErr :: LHsKind GhcPs -> SDoc
-typeAppErr (L _ k)
-  = hang (text "Illegal visible kind application" <+> quotes (ppr k))
-       2 (text "Perhaps you intended to use TypeApplications")
 {-
 ************************************************************************
 *                                                                      *
@@ -1643,7 +1626,7 @@ inScope rdr_env rdr = rdr `elemLocalRdrEnv` rdr_env
 
 extract_tyarg :: LHsTypeArg GhcPs -> FreeKiTyVarsWithDups -> FreeKiTyVarsWithDups
 extract_tyarg (HsValArg ty) acc = extract_lty TypeLevel ty acc
-extract_tyarg (HsTypeArg ki) acc = extract_lty KindLevel ki acc
+extract_tyarg (HsTypeArg _ ki) acc = extract_lty KindLevel ki acc
 extract_tyarg (HsArgPar _) acc = acc
 
 extract_tyargs :: [LHsTypeArg GhcPs] -> FreeKiTyVarsWithDups -> FreeKiTyVarsWithDups

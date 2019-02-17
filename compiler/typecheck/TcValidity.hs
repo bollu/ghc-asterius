@@ -7,7 +7,7 @@
 
 module TcValidity (
   Rank, UserTypeCtxt(..), checkValidType, checkValidMonoType,
-  checkValidTheta, checkValidFamPats,
+  checkValidTheta,
   checkValidInstance, checkValidInstHead, validDerivPred,
   checkTySynRhs,
   checkValidCoAxiom, checkValidCoAxBranch,
@@ -228,7 +228,7 @@ checkAmbiguity ctxt ty
 wantAmbiguityCheck :: UserTypeCtxt -> Bool
 wantAmbiguityCheck ctxt
   = case ctxt of  -- See Note [When we don't check for ambiguity]
-      GhciCtxt     -> False
+      GhciCtxt {}  -> False
       TySynCtxt {} -> False
       TypeAppCtxt  -> False
       _            -> True
@@ -357,7 +357,7 @@ checkValidType ctxt ty
                  ForSigCtxt _   -> rank1
                  SpecInstCtxt   -> rank1
                  ThBrackCtxt    -> rank1
-                 GhciCtxt       -> ArbitraryRank
+                 GhciCtxt {}    -> ArbitraryRank
 
                  TyVarBndrKindCtxt _ -> rank0
                  DataKindCtxt _      -> rank1
@@ -368,12 +368,15 @@ checkValidType ctxt ty
                                           -- Can't happen; not used for *user* sigs
 
        ; env <- tcInitOpenTidyEnv (tyCoVarsOfTypeList ty)
+       ; expand <- initialExpandMode
+       ; let ve = ValidityEnv{ ve_tidy_env = env, ve_ctxt = ctxt
+                             , ve_rank = rank, ve_expand = expand }
 
        -- Check the internal validity of the type itself
        -- Fail if bad things happen, else we misleading
        -- (and more complicated) errors in checkAmbiguity
        ; checkNoErrs $
-         do { check_type env ctxt rank ty
+         do { check_type ve ty
             ; checkUserTypeError ty
             ; traceTc "done ct" (ppr ty) }
 
@@ -388,7 +391,10 @@ checkValidMonoType :: Type -> TcM ()
 -- Assumes argument is fully zonked
 checkValidMonoType ty
   = do { env <- tcInitOpenTidyEnv (tyCoVarsOfTypeList ty)
-       ; check_type env SigmaCtxt MustBeMonoType ty }
+       ; expand <- initialExpandMode
+       ; let ve = ValidityEnv{ ve_tidy_env = env, ve_ctxt = SigmaCtxt
+                             , ve_rank = MustBeMonoType, ve_expand = expand }
+       ; check_type ve ty }
 
 checkTySynRhs :: UserTypeCtxt -> TcType -> TcM ()
 checkTySynRhs ctxt ty
@@ -397,7 +403,8 @@ checkTySynRhs ctxt ty
        ; if ck
          then  when (tcIsConstraintKind actual_kind)
                     (do { dflags <- getDynFlags
-                        ; check_pred_ty emptyTidyEnv dflags ctxt ty })
+                        ; expand <- initialExpandMode
+                        ; check_pred_ty emptyTidyEnv dflags ctxt expand ty })
          else addErrTcM (constraintSynErr emptyTidyEnv actual_kind) }
 
   | otherwise
@@ -425,6 +432,13 @@ data Rank = ArbitraryRank         -- Any rank ok
 
           | MustBeMonoType  -- Monotype regardless of flags
 
+instance Outputable Rank where
+  ppr ArbitraryRank  = text "ArbitraryRank"
+  ppr (LimitedRank top_forall_ok r)
+                     = text "LimitedRank" <+> ppr top_forall_ok
+                                          <+> parens (ppr r)
+  ppr (MonoType msg) = text "MonoType" <+> parens msg
+  ppr MustBeMonoType = text "MustBeMonoType"
 
 rankZeroMonoType, tyConArgMonoType, synArgMonoType, constraintMonoType :: Rank
 rankZeroMonoType   = MonoType (text "Perhaps you intended to use RankNTypes")
@@ -450,35 +464,159 @@ constraintsAllowed (TySynKindCtxt {})     = False
 constraintsAllowed (TyFamResKindCtxt {})  = False
 constraintsAllowed _ = True
 
+{-
+Note [Correctness and performance of type synonym validity checking]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider the type A arg1 arg2, where A is a type synonym. How should we check
+this type for validity? We have three distinct choices, corresponding to the
+three constructors of ExpandMode:
+
+1. Expand the application of A, and check the resulting type (`Expand`).
+2. Don't expand the application of A. Only check the arguments (`NoExpand`).
+3. Check the arguments *and* check the expanded type (`Both`).
+
+It's tempting to think that we could always just pick choice (3), but this
+results in serious performance issues when checking a type like in the
+signature for `f` below:
+
+  type S = ...
+  f :: S (S (S (S (S (S ....(S Int)...))))
+
+When checking the type of `f`, we'll check the outer `S` application with and
+without expansion, and in *each* of those checks, we'll check the next `S`
+application with and without expansion... the result is exponential blowup! So
+clearly we don't want to use `Both` 100% of the time.
+
+On the other hand, neither is it correct to use exclusively `Expand` or
+exclusively `NoExpand` 100% of the time:
+
+* If one always expands, then one can miss erroneous programs like the one in
+  the `tcfail129` test case:
+
+    type Foo a = String -> Maybe a
+    type Bar m = m Int
+    blah = undefined :: Bar Foo
+
+  If we expand `Bar Foo` immediately, we'll miss the fact that the `Foo` type
+  synonyms is unsaturated.
+* If one never expands and only checks the arguments, then one can miss
+  erroneous programs like the one in Trac #16059:
+
+    type Foo b = Eq b => b
+    f :: forall b (a :: Foo b). Int
+
+  The kind of `a` contains a constraint, which is illegal, but this will only
+  be caught if `Foo b` is expanded.
+
+Therefore, it's impossible to have these validity checks be simultaneously
+correct and performant if one sticks exclusively to a single `ExpandMode`. In
+that case, the solution is to vary the `ExpandMode`s! In more detail:
+
+1. When we start validity checking, we start with `Expand` if
+   LiberalTypeSynonyms is enabled (see Note [Liberal type synonyms] for why we
+   do this), and we start with `Both` otherwise. The `initialExpandMode`
+   function is responsible for this.
+2. When expanding an application of a type synonym (in `check_syn_tc_app`), we
+   determine which things to check based on the current `ExpandMode` argument.
+   Importantly, if the current mode is `Both`, then we check the arguments in
+   `NoExpand` mode and check the expanded type in `Both` mode.
+
+   Switching to `NoExpand` when checking the arguments is vital to avoid
+   exponential blowup. One consequence of this choice is that if you have
+   the following type synonym in one module (with RankNTypes enabled):
+
+     {-# LANGUAGE RankNTypes #-}
+     module A where
+     type A = forall a. a
+
+   And you define the following in a separate module *without* RankNTypes
+   enabled:
+
+     module B where
+
+     import A
+
+     type Const a b = a
+     f :: Const Int A -> Int
+
+   Then `f` will be accepted, even though `A` (which is technically a rank-n
+   type) appears in its type. We view this as an acceptable compromise, since
+   `A` never appears in the type of `f` post-expansion. If `A` _did_ appear in
+   a type post-expansion, such as in the following variant:
+
+     g :: Const A A -> Int
+
+   Then that would be rejected unless RankNTypes were enabled.
+-}
+
+-- | When validity-checking an application of a type synonym, should we
+-- check the arguments, check the expanded type, or both?
+-- See Note [Correctness and performance of type synonym validity checking]
+data ExpandMode
+  = Expand   -- ^ Only check the expanded type.
+  | NoExpand -- ^ Only check the arguments.
+  | Both     -- ^ Check both the arguments and the expanded type.
+
+instance Outputable ExpandMode where
+  ppr e = text $ case e of
+                   Expand   -> "Expand"
+                   NoExpand -> "NoExpand"
+                   Both     -> "Both"
+
+-- | If @LiberalTypeSynonyms@ is enabled, we start in 'Expand' mode for the
+-- reasons explained in @Note [Liberal type synonyms]@. Otherwise, we start
+-- in 'Both' mode.
+initialExpandMode :: TcM ExpandMode
+initialExpandMode = do
+  liberal_flag <- xoptM LangExt.LiberalTypeSynonyms
+  pure $ if liberal_flag then Expand else Both
+
+-- | Information about a type being validity-checked.
+data ValidityEnv = ValidityEnv
+  { ve_tidy_env :: TidyEnv
+  , ve_ctxt     :: UserTypeCtxt
+  , ve_rank     :: Rank
+  , ve_expand   :: ExpandMode }
+
+instance Outputable ValidityEnv where
+  ppr (ValidityEnv{ ve_tidy_env = env, ve_ctxt = ctxt
+                  , ve_rank = rank, ve_expand = expand }) =
+    hang (text "ValidityEnv")
+       2 (vcat [ text "ve_tidy_env" <+> ppr env
+               , text "ve_ctxt"     <+> pprUserTypeCtxt ctxt
+               , text "ve_rank"     <+> ppr rank
+               , text "ve_expand"   <+> ppr expand ])
+
 ----------------------------------------
-check_type :: TidyEnv -> UserTypeCtxt -> Rank -> Type -> TcM ()
+check_type :: ValidityEnv -> Type -> TcM ()
 -- The args say what the *type context* requires, independent
 -- of *flag* settings.  You test the flag settings at usage sites.
 --
 -- Rank is allowed rank for function args
 -- Rank 0 means no for-alls anywhere
 
-check_type _ _ _ (TyVarTy _) = return ()
+check_type _ (TyVarTy _) = return ()
 
-check_type env ctxt rank (AppTy ty1 ty2)
-  = do  { check_type env ctxt rank ty1
-        ; check_arg_type env ctxt rank ty2 }
+check_type ve (AppTy ty1 ty2)
+  = do  { check_type ve ty1
+        ; check_arg_type False ve ty2 }
 
-check_type env ctxt rank ty@(TyConApp tc tys)
+check_type ve ty@(TyConApp tc tys)
   | isTypeSynonymTyCon tc || isTypeFamilyTyCon tc
-  = check_syn_tc_app env ctxt rank ty tc tys
-  | isUnboxedTupleTyCon tc = check_ubx_tuple  env ctxt      ty    tys
-  | otherwise              = mapM_ (check_arg_type env ctxt rank) tys
+  = check_syn_tc_app ve ty tc tys
+  | isUnboxedTupleTyCon tc = check_ubx_tuple ve ty tys
+  | otherwise              = mapM_ (check_arg_type False ve) tys
 
-check_type _ _ _ (LitTy {}) = return ()
+check_type _ (LitTy {}) = return ()
 
-check_type env ctxt rank (CastTy ty _) = check_type env ctxt rank ty
+check_type ve (CastTy ty _) = check_type ve ty
 
 -- Check for rank-n types, such as (forall x. x -> x) or (Show x => x).
 --
 -- Critically, this case must come *after* the case for TyConApp.
 -- See Note [Liberal type synonyms].
-check_type env ctxt rank ty
+check_type ve@(ValidityEnv{ ve_tidy_env = env, ve_ctxt = ctxt
+                          , ve_rank = rank, ve_expand = expand }) ty
   | not (null tvbs && null theta)
   = do  { traceTc "check_type" (ppr ty $$ ppr (forAllAllowed rank))
         ; checkTcM (forAllAllowed rank) (forAllTyErr env rank ty)
@@ -490,11 +628,12 @@ check_type env ctxt rank ty
                 -- Reject forall (a :: Eq b => b). blah
                 -- In a kind signature we don't allow constraints
 
-        ; check_valid_theta env' SigmaCtxt theta
+        ; check_valid_theta env' SigmaCtxt expand theta
                 -- Allow     type T = ?x::Int => Int -> Int
                 -- but not   type T = ?x::Int
 
-        ; check_type env' ctxt rank tau      -- Allow foralls to right of arrow
+        ; check_type (ve{ve_tidy_env = env'}) tau
+                -- Allow foralls to right of arrow
 
         ; checkTcM (not (any (`elemVarSet` tyCoVarsOfType phi_kind) tvs))
                    (forAllEscapeErr env' ty tau_kind)
@@ -511,21 +650,22 @@ check_type env ctxt rank ty
              | otherwise  = liftedTypeKind
         -- If there are any constraints, the kind is *. (#11405)
 
-check_type env ctxt rank (FunTy arg_ty res_ty)
-  = do  { check_type env ctxt arg_rank arg_ty
-        ; check_type env ctxt res_rank res_ty }
+check_type (ve@ValidityEnv{ve_rank = rank}) (FunTy arg_ty res_ty)
+  = do  { check_type (ve{ve_rank = arg_rank}) arg_ty
+        ; check_type (ve{ve_rank = res_rank}) res_ty }
   where
     (arg_rank, res_rank) = funArgResRank rank
 
-check_type _ _ _ ty = pprPanic "check_type" (ppr ty)
+check_type _ ty = pprPanic "check_type" (ppr ty)
 
 ----------------------------------------
-check_syn_tc_app :: TidyEnv -> UserTypeCtxt -> Rank -> KindOrType
-                 -> TyCon -> [KindOrType] -> TcM ()
+check_syn_tc_app :: ValidityEnv
+                 -> KindOrType -> TyCon -> [KindOrType] -> TcM ()
 -- Used for type synonyms and type synonym families,
 -- which must be saturated,
 -- but not data families, which need not be saturated
-check_syn_tc_app env ctxt rank ty tc tys
+check_syn_tc_app (ve@ValidityEnv{ ve_ctxt = ctxt, ve_expand = expand })
+                 ty tc tys
   | tys `lengthAtLeast` tc_arity   -- Saturated
        -- Check that the synonym has enough args
        -- This applies equally to open and closed synonyms
@@ -533,35 +673,81 @@ check_syn_tc_app env ctxt rank ty tc tys
        --      data Tree a b = ...
        --      type Foo a = Tree [a]
        --      f :: Foo a b -> ...
-  = do  { -- See Note [Liberal type synonyms]
-        ; liberal <- xoptM LangExt.LiberalTypeSynonyms
-        ; if not liberal || isTypeFamilyTyCon tc then
-                -- For H98 and synonym families, do check the type args
-                mapM_ check_arg tys
+  = case expand of
+      _ |  isTypeFamilyTyCon tc
+        -> check_args_only expand
+      -- See Note [Correctness and performance of type synonym validity
+      --           checking]
+      Expand   -> check_expansion_only expand
+      NoExpand -> check_args_only expand
+      Both     -> check_args_only NoExpand *> check_expansion_only Both
 
-          else  -- In the liberal case (only for closed syns), expand then check
-          case tcView ty of
-             Just ty' -> let syn_tc = fst $ tcRepSplitTyConApp ty
-                             err_ctxt = text "In the expansion of type synonym"
-                                        <+> quotes (ppr syn_tc)
-                         in addErrCtxt err_ctxt $ check_type env ctxt rank ty'
-             Nothing  -> pprPanic "check_tau_type" (ppr ty)  }
-
-  | GhciCtxt <- ctxt  -- Accept under-saturated type synonyms in
-                      -- GHCi :kind commands; see Trac #7586
-  = mapM_ check_arg tys
+  | GhciCtxt True <- ctxt  -- Accept outermost under-saturated type synonym or
+                           -- type family constructors in GHCi :kind commands.
+                           -- See Note [Unsaturated type synonyms in GHCi]
+  = check_args_only expand
 
   | otherwise
   = failWithTc (tyConArityErr tc tys)
   where
     tc_arity  = tyConArity tc
-    check_arg | isTypeFamilyTyCon tc = check_arg_type  env ctxt rank
-              | otherwise            = check_type      env ctxt synArgMonoType
+
+    check_arg :: ExpandMode -> KindOrType -> TcM ()
+    check_arg expand =
+      check_arg_type (isTypeSynonymTyCon tc) (ve{ve_expand = expand})
+
+    check_args_only, check_expansion_only :: ExpandMode -> TcM ()
+    check_args_only expand = mapM_ (check_arg expand) tys
+    check_expansion_only expand =
+      case tcView ty of
+         Just ty' -> let syn_tc = fst $ tcRepSplitTyConApp ty
+                         err_ctxt = text "In the expansion of type synonym"
+                                    <+> quotes (ppr syn_tc)
+                     in addErrCtxt err_ctxt $
+                        check_type (ve{ve_expand = expand}) ty'
+         Nothing  -> pprPanic "check_syn_tc_app" (ppr ty)
+
+{-
+Note [Unsaturated type synonyms in GHCi]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Generally speaking, GHC disallows unsaturated uses of type synonyms or type
+families. For instance, if one defines `type Const a b = a`, then GHC will not
+permit using `Const` unless it is applied to (at least) two arguments. There is
+an exception to this rule, however: GHCi's :kind command. For instance, it
+is quite common to look up the kind of a type constructor like so:
+
+  λ> :kind Const
+  Const :: j -> k -> j
+  λ> :kind Const Int
+  Const Int :: k -> Type
+
+Strictly speaking, the two uses of `Const` above are unsaturated, but this
+is an extremely benign (and useful) example of unsaturation, so we allow it
+here as a special case.
+
+That being said, we do not allow unsaturation carte blanche in GHCi. Otherwise,
+this GHCi interaction would be possible:
+
+  λ> newtype Fix f = MkFix (f (Fix f))
+  λ> type Id a = a
+  λ> :kind Fix Id
+  Fix Id :: Type
+
+This is rather dodgy, so we move to disallow this. We only permit unsaturated
+synonyms in GHCi if they are *top-level*—that is, if the synonym is the
+outermost type being applied. This allows `Const` and `Const Int` in the
+first example, but not `Fix Id` in the second example, as `Id` is not the
+outermost type being applied (`Fix` is).
+
+We track this outermost property in the GhciCtxt constructor of UserTypeCtxt.
+A field of True in GhciCtxt indicates that we're in an outermost position. Any
+time we invoke `check_arg` to check the validity of an argument, we switch the
+field to False.
+-}
 
 ----------------------------------------
-check_ubx_tuple :: TidyEnv -> UserTypeCtxt -> KindOrType
-                -> [KindOrType] -> TcM ()
-check_ubx_tuple env ctxt ty tys
+check_ubx_tuple :: ValidityEnv -> KindOrType -> [KindOrType] -> TcM ()
+check_ubx_tuple (ve@ValidityEnv{ve_tidy_env = env}) ty tys
   = do  { ub_tuples_allowed <- xoptM LangExt.UnboxedTuples
         ; checkTcM ub_tuples_allowed (ubxArgTyErr env ty)
 
@@ -570,10 +756,12 @@ check_ubx_tuple env ctxt ty tys
                 -- c.f. check_arg_type
                 -- However, args are allowed to be unlifted, or
                 -- more unboxed tuples, so can't use check_arg_ty
-        ; mapM_ (check_type env ctxt rank') tys }
+        ; mapM_ (check_type (ve{ve_rank = rank'})) tys }
 
 ----------------------------------------
-check_arg_type :: TidyEnv -> UserTypeCtxt -> Rank -> KindOrType -> TcM ()
+check_arg_type
+  :: Bool -- ^ Is this the argument to a type synonym?
+  -> ValidityEnv -> KindOrType -> TcM ()
 -- The sort of type that can instantiate a type variable,
 -- or be the argument of a type constructor.
 -- Not an unboxed tuple, but now *can* be a forall (since impredicativity)
@@ -592,11 +780,14 @@ check_arg_type :: TidyEnv -> UserTypeCtxt -> Rank -> KindOrType -> TcM ()
 --     But not in user code.
 -- Anyway, they are dealt with by a special case in check_tau_type
 
-check_arg_type _ _ _ (CoercionTy {}) = return ()
+check_arg_type _ _ (CoercionTy {}) = return ()
 
-check_arg_type env ctxt rank ty
+check_arg_type type_syn (ve@ValidityEnv{ve_ctxt = ctxt, ve_rank = rank}) ty
   = do  { impred <- xoptM LangExt.ImpredicativeTypes
         ; let rank' = case rank of          -- Predictive => must be monotype
+                        -- Rank-n arguments to type synonyms are OK, provided
+                        -- that LiberalTypeSynonyms is enabled.
+                        _ | type_syn       -> synArgMonoType
                         MustBeMonoType     -> MustBeMonoType  -- Monotype, regardless
                         _other | impred    -> ArbitraryRank
                                | otherwise -> tyConArgMonoType
@@ -604,8 +795,17 @@ check_arg_type env ctxt rank ty
                         -- so that we don't suggest -XImpredicativeTypes in
                         --    (Ord (forall a.a)) => a -> a
                         -- and so that if it Must be a monotype, we check that it is!
+              ctxt' :: UserTypeCtxt
+              ctxt'
+                | GhciCtxt _ <- ctxt = GhciCtxt False
+                    -- When checking an argument, set the field of GhciCtxt to
+                    -- False to indicate that we are no longer in an outermost
+                    -- position (and thus unsaturated synonyms are no longer
+                    -- allowed).
+                    -- See Note [Unsaturated type synonyms in GHCi]
+                | otherwise          = ctxt
 
-        ; check_type env ctxt rank' ty }
+        ; check_type (ve{ve_ctxt = ctxt', ve_rank = rank'}) ty }
 
 ----------------------------------------
 forAllTyErr :: TidyEnv -> Rank -> Type -> (TidyEnv, SDoc)
@@ -719,19 +919,21 @@ checkValidTheta :: UserTypeCtxt -> ThetaType -> TcM ()
 checkValidTheta ctxt theta
   = addErrCtxtM (checkThetaCtxt ctxt theta) $
     do { env <- tcInitOpenTidyEnv (tyCoVarsOfTypesList theta)
-       ; check_valid_theta env ctxt theta }
+       ; expand <- initialExpandMode
+       ; check_valid_theta env ctxt expand theta }
 
 -------------------------
-check_valid_theta :: TidyEnv -> UserTypeCtxt -> [PredType] -> TcM ()
-check_valid_theta _ _ []
+check_valid_theta :: TidyEnv -> UserTypeCtxt -> ExpandMode
+                  -> [PredType] -> TcM ()
+check_valid_theta _ _ _ []
   = return ()
-check_valid_theta env ctxt theta
+check_valid_theta env ctxt expand theta
   = do { dflags <- getDynFlags
        ; warnTcM (Reason Opt_WarnDuplicateConstraints)
                  (wopt Opt_WarnDuplicateConstraints dflags && notNull dups)
                  (dupPredWarn env dups)
        ; traceTc "check_valid_theta" (ppr theta)
-       ; mapM_ (check_pred_ty env dflags ctxt) theta }
+       ; mapM_ (check_pred_ty env dflags ctxt expand) theta }
   where
     (_,dups) = removeDups nonDetCmpType theta
     -- It's OK to use nonDetCmpType because dups only appears in the
@@ -762,17 +964,24 @@ to avoid requiring language extensions at the use site.  Main example
 We don't want to require ConstraintKinds in module B.
 -}
 
-check_pred_ty :: TidyEnv -> DynFlags -> UserTypeCtxt -> PredType -> TcM ()
+check_pred_ty :: TidyEnv -> DynFlags -> UserTypeCtxt -> ExpandMode
+              -> PredType -> TcM ()
 -- Check the validity of a predicate in a signature
 -- See Note [Validity checking for constraints]
-check_pred_ty env dflags ctxt pred
-  = do { check_type env SigmaCtxt rank pred
+check_pred_ty env dflags ctxt expand pred
+  = do { check_type ve pred
        ; check_pred_help False env dflags ctxt pred }
   where
     rank | xopt LangExt.QuantifiedConstraints dflags
          = ArbitraryRank
          | otherwise
          = constraintMonoType
+
+    ve :: ValidityEnv
+    ve = ValidityEnv{ ve_tidy_env = env
+                    , ve_ctxt     = SigmaCtxt
+                    , ve_rank     = rank
+                    , ve_expand   = expand }
 
 check_pred_help :: Bool    -- True <=> under a type synonym
                 -> TidyEnv
@@ -1007,7 +1216,7 @@ okIPCtxt GenSigCtxt             = True
 okIPCtxt (ConArgCtxt {})        = True
 okIPCtxt (ForSigCtxt {})        = True  -- ??
 okIPCtxt ThBrackCtxt            = True
-okIPCtxt GhciCtxt               = True
+okIPCtxt (GhciCtxt {})          = True
 okIPCtxt SigmaCtxt              = True
 okIPCtxt (DataTyCtxt {})        = True
 okIPCtxt (PatSynCtxt {})        = True
@@ -1516,7 +1725,8 @@ checkValidInstance ctxt hs_type ty
         ; traceTc "checkValidInstance {" (ppr ty)
 
         ; env0 <- tcInitTidyEnv
-        ; check_valid_theta env0 ctxt theta
+        ; expand <- initialExpandMode
+        ; check_valid_theta env0 ctxt expand theta
 
         -- The Termination and Coverate Conditions
         -- Check that instance inference will terminate (if we care)
@@ -1845,7 +2055,17 @@ checkFamPatBinders fam_tc qtvs pats rhs
          --    data instance forall a.  T Int = MkT Int
          -- See Note [Unused explicitly bound variables in a family pattern]
        ; check_tvs bad_qtvs (text "bound by a forall")
-                            (text "used in") }
+                            (text "used in")
+
+         -- Check for oversaturated visible kind arguments in a type family
+         -- equation.
+         -- See Note [Oversaturated type family equations]
+       ; when (isTypeFamilyTyCon fam_tc) $
+           case drop (tyConArity fam_tc) pats of
+             [] -> pure ()
+             spec_arg:_ ->
+               addErr $ text "Illegal oversaturated visible kind argument:"
+                    <+> quotes (char '@' <> pprParendType spec_arg) }
   where
     pat_tvs       = tyCoVarsOfTypes pats
     exact_pat_tvs = exactTyCoVarsOfTypes pats
@@ -2190,6 +2410,62 @@ type application, like @x \@Bool 1@. (Of course it does nothing, but it is
 permissible.) In the type family case, the only sensible explanation is that
 the user has made a mistake -- thus we throw an error.
 
+Note [Oversaturated type family equations]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Type family tycons have very rigid arities. We want to reject something like
+this:
+
+  type family Foo :: Type -> Type where
+    Foo x = ...
+
+Because Foo has arity zero (i.e., it doesn't bind anything to the left of the
+double colon), we want to disallow any equation for Foo that has more than zero
+arguments, such as `Foo x = ...`. The algorithm here is pretty simple: if an
+equation has more arguments than the arity of the type family, reject.
+
+Things get trickier when visible kind application enters the picture. Consider
+the following example:
+
+  type family Bar (x :: j) :: forall k. Either j k where
+    Bar 5 @Symbol = ...
+
+The arity of Bar is two, since it binds two variables, `j` and `x`. But even
+though Bar's equation has two arguments, it's still invalid. Imagine the same
+equation in Core:
+
+    Bar Nat 5 Symbol = ...
+
+Here, it becomes apparent that Bar is actually taking /three/ arguments! So
+we can't just rely on a simple counting argument to reject
+`Bar 5 @Symbol = ...`, since it only has two user-written arguments.
+Moreover, there's one explicit argument (5) and one visible kind argument
+(@Symbol), which matches up perfectly with the fact that Bar has one required
+binder (x) and one specified binder (j), so that's not a valid way to detect
+oversaturation either.
+
+To solve this problem in a robust way, we do the following:
+
+1. When kind-checking, we count the number of user-written *required*
+   arguments and check if there is an equal number of required tycon binders.
+   If not, reject. (See `wrongNumberOfParmsErr` in TcTyClsDecls.)
+
+   We perform this step during kind-checking, not during validity checking,
+   since we can give better error messages if we catch it early.
+2. When validity checking, take all of the (Core) type patterns from on
+   equation, drop the first n of them (where n is the arity of the type family
+   tycon), and check if there are any types leftover. If so, reject.
+
+   Why does this work? We know that after dropping the first n type patterns,
+   none of the leftover types can be required arguments, since step (1) would
+   have already caught that. Moreover, the only places where visible kind
+   applications should be allowed are in the first n types, since those are the
+   only arguments that can correspond to binding forms. Therefore, the
+   remaining arguments must correspond to oversaturated uses of visible kind
+   applications, which are precisely what we want to reject.
+
+Note that we only perform this check for type families, and not for data
+families. This is because it is perfectly acceptable to oversaturate data
+family instance equations: see Note [Arity of data families] in FamInstEnv.
 
 ************************************************************************
 *                                                                      *

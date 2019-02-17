@@ -33,6 +33,9 @@ import qualified Data.IntSet    as IntSet
 
 -- | Spill all these virtual regs to stack slots.
 --
+--   Bumps the number of required stack slots if required.
+--
+--
 --   TODO: See if we can split some of the live ranges instead of just globally
 --         spilling the virtual reg. This might make the spill cleaner's job easier.
 --
@@ -45,20 +48,22 @@ regSpill
         => Platform
         -> [LiveCmmDecl statics instr]  -- ^ the code
         -> UniqSet Int                  -- ^ available stack slots
+        -> Int                          -- ^ current number of spill slots.
         -> UniqSet VirtualReg           -- ^ the regs to spill
         -> UniqSM
             ([LiveCmmDecl statics instr]
                  -- code with SPILL and RELOAD meta instructions added.
             , UniqSet Int               -- left over slots
+            , Int                       -- slot count in use now.
             , SpillStats )              -- stats about what happened during spilling
 
-regSpill platform code slotsFree regs
+regSpill platform code slotsFree slotCount regs
 
         -- Not enough slots to spill these regs.
         | sizeUniqSet slotsFree < sizeUniqSet regs
-        = pprPanic "regSpill: out of spill slots!"
-                (  text "   regs to spill = " <> ppr (sizeUniqSet regs)
-                $$ text "   slots left    = " <> ppr (sizeUniqSet slotsFree))
+        = -- pprTrace "Bumping slot count:" (ppr slotCount <> text " -> " <> ppr (slotCount+512)) $
+          let slotsFree' = (addListToUniqSet slotsFree [slotCount+1 .. slotCount+512])
+          in regSpill platform code slotsFree' (slotCount+512) regs
 
         | otherwise
         = do
@@ -80,6 +85,7 @@ regSpill platform code slotsFree regs
 
                 return  ( code'
                         , minusUniqSet slotsFree (mkUniqSet slots)
+                        , slotCount
                         , makeSpillStats state')
 
 
@@ -99,12 +105,8 @@ regSpill_top platform regSlotMap cmm
          -> return cmm
 
         CmmProc info label live sccs
-         |  LiveInfo static firstId mLiveVRegsOnEntry liveSlotsOnEntry <- info
+         |  LiveInfo static firstId liveVRegsOnEntry liveSlotsOnEntry <- info
          -> do
-                -- We should only passed Cmms with the liveness maps filled in,
-                -- but we'll create empty ones if they're not there just in case.
-                let liveVRegsOnEntry    = fromMaybe mapEmpty mLiveVRegsOnEntry
-
                 -- The liveVRegsOnEntry contains the set of vregs that are live
                 -- on entry to each basic block. If we spill one of those vregs
                 -- we remove it from that set and add the corresponding slot
@@ -118,7 +120,7 @@ regSpill_top platform regSlotMap cmm
 
                 let info'
                         = LiveInfo static firstId
-                                (Just liveVRegsOnEntry)
+                                liveVRegsOnEntry
                                 liveSlotsOnEntry'
 
                 -- Apply the spiller to all the basic blocks in the CmmProc.

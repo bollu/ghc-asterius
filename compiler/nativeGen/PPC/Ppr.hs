@@ -125,12 +125,8 @@ pprDatas :: CmmStatics -> SDoc
 pprDatas (Statics lbl dats) = vcat (pprLabel lbl : map pprData dats)
 
 pprData :: CmmStatic -> SDoc
-pprData (CmmString str)          = pprASCII str
-pprData (CmmUninitialised bytes) = keyword <> int bytes
-    where keyword = sdocWithPlatform $ \platform ->
-                    case platformOS platform of
-                    OSAIX    -> text ".space "
-                    _        -> text ".skip "
+pprData (CmmString str)          = pprBytes str
+pprData (CmmUninitialised bytes) = text ".space " <> int bytes
 pprData (CmmStaticLit lit)       = pprDataItem lit
 
 pprGloblDecl :: CLabel -> SDoc
@@ -150,15 +146,6 @@ pprLabel :: CLabel -> SDoc
 pprLabel lbl = pprGloblDecl lbl
             $$ pprTypeAndSizeDecl lbl
             $$ (ppr lbl <> char ':')
-
-
-pprASCII :: [Word8] -> SDoc
-pprASCII str
-  = vcat (map do1 str) $$ do1 0
-    where
-       do1 :: Word8 -> SDoc
-       do1 w = text "\t.byte\t" <> int (fromIntegral w)
-
 
 -- -----------------------------------------------------------------------------
 -- pprInstr: print an 'Instr'
@@ -903,24 +890,6 @@ pprInstr ISYNC  = text "\tisync"
 pprInstr LWSYNC = text "\tlwsync"
 
 pprInstr NOP = text "\tnop"
-
-pprInstr (UPDATE_SP fmt amount@(ImmInt offset))
-   | fits16Bits offset = vcat [
-       pprInstr (LD fmt r0 (AddrRegImm sp (ImmInt 0))),
-       pprInstr (STU fmt r0 (AddrRegImm sp amount))
-     ]
-
-pprInstr (UPDATE_SP fmt amount)
-   = sdocWithPlatform $ \platform ->
-       let tmp = tmpReg platform in
-         vcat [
-           pprInstr (LD fmt r0 (AddrRegImm sp (ImmInt 0))),
-           pprInstr (ADDIS tmp sp (HA amount)),
-           pprInstr (ADD tmp tmp (RIImm (LO amount))),
-           pprInstr (STU fmt r0 (AddrRegReg sp tmp))
-         ]
-
--- pprInstr _ = panic "pprInstr (ppc)"
 
 
 pprLogic :: PtrString -> Reg -> Reg -> RI -> SDoc

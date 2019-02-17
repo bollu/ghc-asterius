@@ -360,7 +360,7 @@ basicKnownKeyNames
         -- Others
         otherwiseIdName, inlineIdName,
         eqStringName, assertName, breakpointName, breakpointCondName,
-        breakpointAutoName,  opaqueTyConName,
+        opaqueTyConName,
         assertErrorName, traceName,
         printName, fstName, sndName,
         dollarName,
@@ -644,10 +644,6 @@ main_RDR_Unqual    :: RdrName
 main_RDR_Unqual = mkUnqual varName (fsLit "main")
         -- We definitely don't want an Orig RdrName, because
         -- main might, in principle, be imported into module Main
-
-forall_tv_RDR, dot_tv_RDR :: RdrName
-forall_tv_RDR = mkUnqual tvName (fsLit "forall")
-dot_tv_RDR    = mkUnqual tvName (fsLit ".")
 
 eq_RDR, ge_RDR, le_RDR, lt_RDR, gt_RDR, compare_RDR,
     ltTag_RDR, eqTag_RDR, gtTag_RDR :: RdrName
@@ -1081,7 +1077,7 @@ groupWithName = varQual gHC_EXTS (fsLit "groupWith") groupWithIdKey
 -- Random PrelBase functions
 fromStringName, otherwiseIdName, foldrName, buildName, augmentName,
     mapName, appendName, assertName,
-    breakpointName, breakpointCondName, breakpointAutoName,
+    breakpointName, breakpointCondName,
     opaqueTyConName, dollarName :: Name
 dollarName        = varQual gHC_BASE (fsLit "$")          dollarIdKey
 otherwiseIdName   = varQual gHC_BASE (fsLit "otherwise")  otherwiseIdKey
@@ -1093,28 +1089,8 @@ appendName        = varQual gHC_BASE (fsLit "++")         appendIdKey
 assertName        = varQual gHC_BASE (fsLit "assert")     assertIdKey
 breakpointName    = varQual gHC_BASE (fsLit "breakpoint") breakpointIdKey
 breakpointCondName= varQual gHC_BASE (fsLit "breakpointCond") breakpointCondIdKey
-breakpointAutoName= varQual gHC_BASE (fsLit "breakpointAuto") breakpointAutoIdKey
 opaqueTyConName   = tcQual  gHC_BASE (fsLit "Opaque")     opaqueTyConKey
 fromStringName = varQual dATA_STRING (fsLit "fromString") fromStringClassOpKey
-
-breakpointJumpName :: Name
-breakpointJumpName
-    = mkInternalName
-        breakpointJumpIdKey
-        (mkOccNameFS varName (fsLit "breakpointJump"))
-        noSrcSpan
-breakpointCondJumpName :: Name
-breakpointCondJumpName
-    = mkInternalName
-        breakpointCondJumpIdKey
-        (mkOccNameFS varName (fsLit "breakpointCondJump"))
-        noSrcSpan
-breakpointAutoJumpName :: Name
-breakpointAutoJumpName
-    = mkInternalName
-        breakpointAutoJumpIdKey
-        (mkOccNameFS varName (fsLit "breakpointAutoJump"))
-        noSrcSpan
 
 -- PrelTup
 fstName, sndName :: Name
@@ -2224,15 +2200,9 @@ runRWKey                      = mkPreludeMiscIdUnique 107
 traceKey :: Unique
 traceKey                      = mkPreludeMiscIdUnique 108
 
-breakpointIdKey, breakpointCondIdKey, breakpointAutoIdKey,
-    breakpointJumpIdKey, breakpointCondJumpIdKey,
-    breakpointAutoJumpIdKey :: Unique
+breakpointIdKey, breakpointCondIdKey :: Unique
 breakpointIdKey               = mkPreludeMiscIdUnique 110
 breakpointCondIdKey           = mkPreludeMiscIdUnique 111
-breakpointAutoIdKey           = mkPreludeMiscIdUnique 112
-breakpointJumpIdKey           = mkPreludeMiscIdUnique 113
-breakpointCondJumpIdKey       = mkPreludeMiscIdUnique 114
-breakpointAutoJumpIdKey       = mkPreludeMiscIdUnique 115
 
 inlineIdKey, noinlineIdKey :: Unique
 inlineIdKey                   = mkPreludeMiscIdUnique 120

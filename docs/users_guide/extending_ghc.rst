@@ -216,6 +216,16 @@ be reset with the :ghc-flag:`-fclear-plugins` option.
     Give arguments to a plugin module; module must be specified with
     :ghc-flag:`-fplugin=⟨module⟩`.
 
+.. ghc-flag:: -fplugin-trustworthy
+    :shortdesc: Trust the used plugins and no longer mark the compiled module
+        as unsafe
+    :type: dynamic
+    :category: plugins
+
+    By default, when a module is compiled with plugins, it will be marked as
+    unsafe. With this flag passed, all plugins are treated as trustworthy
+    and the safety inference will no longer be affected.
+
 .. ghc-flag:: -fclear-plugins
     :shortdesc: Clear the list of active plugins
     :type: dynamic
@@ -671,7 +681,7 @@ you need to access the renamed or type checked version of the syntax tree with
     renamed :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
 
 By overriding the ``renamedResultAction`` field we can modify each ``HsGroup``
-after it has been renamed. A source file is seperated into groups depending on
+after it has been renamed. A source file is separated into groups depending on
 the location of template haskell splices so the contents of these groups may
 not be intuitive. In order to save the entire renamed AST for inspection
 at the end of typechecking you can set ``renamedResultAction`` to ``keepRenamedSource``
@@ -851,6 +861,7 @@ In general, the ``pluginRecompile`` field has the following type::
 
 The ``PluginRecompile`` data type is an enumeration determining how the plugin
 should affect recompilation. ::
+
     data PluginRecompile = ForceRecompile | NoForceRecompile | MaybeRecompile Fingerprint
 
 A plugin which declares itself impure using ``ForceRecompile`` will always

@@ -6,11 +6,13 @@ before_script:
   - git submodule sync --recursive
   - git submodule update --init --recursive
   - git checkout .gitmodules
+  - "git fetch https://gitlab.haskell.org/ghc/ghc-performance-notes.git refs/notes/perf:refs/notes/perf || true"
 
 stages:
   - lint
   - build
   - full-build
+  - cleanup # See Note [Cleanup on Windows]
 
 ############################################################
 # Runner Tags
@@ -41,6 +43,7 @@ ghc-linters:
         .gitlab/linters/check-makefiles.py $base $CI_COMMIT_SHA
         .gitlab/linters/check-cpp.py $base $CI_COMMIT_SHA
       fi
+  dependencies: []
   tags:
     - lint
 
@@ -57,6 +60,7 @@ ghc-linters:
     - ./boot
     - ./configure $CONFIGURE_ARGS
     - hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh`
+    - hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` docs-haddock
   cache:
     key: hadrian
     paths:
@@ -73,6 +77,7 @@ validate-x86_64-linux-deb8-hadrian:
     - git submodule sync --recursive
     - git submodule update --init --recursive
     - git checkout .gitmodules
+    - "git fetch https://gitlab.haskell.org/ghc/ghc-performance-notes.git refs/notes/perf:refs/notes/perf || true"
   tags:
     - x86_64-linux
 
@@ -90,13 +95,22 @@ validate-x86_64-linux-deb8-hadrian:
     - ./configure $CONFIGURE_ARGS
     - |
       THREADS=`mk/detect-cpu-count.sh`
-      make V=0 -j$THREADS
+      make V=0 -j$THREADS WERROR=-Werror 
     - |
       make binary-dist TAR_COMP_OPTS="-1"
       mv ghc-*.tar.xz ghc.tar.xz
     - |
+      # Prepare to push git notes.
+      METRICS_FILE=$(mktemp)
+      git config user.email "ben+ghc-ci@smart-cactus.org"
+      git config user.name "GHC GitLab CI"
+    - |
       THREADS=`mk/detect-cpu-count.sh`
-      make $TEST_TYPE THREADS=$THREADS JUNIT_FILE=../../junit.xml
+      make $TEST_TYPE THREADS=$THREADS JUNIT_FILE=../../junit.xml METRICS_FILE=$METRICS_FILE
+    - |
+      # Push git notes.
+      METRICS_FILE=$METRICS_FILE .gitlab/push-test-metrics.sh
+  dependencies: []
   artifacts:
     reports:
       junit: junit.xml
@@ -108,7 +122,6 @@ validate-x86_64-linux-deb8-hadrian:
 validate-x86_64-darwin:
   extends: .validate
   stage: full-build
-  allow_failure: true
   tags:
     - x86_64-darwin
   variables:
@@ -117,18 +130,18 @@ validate-x86_64-darwin:
     # Only Sierra and onwards supports clock_gettime. See #12858
     ac_cv_func_clock_gettime: "no"
     LANG: "en_US.UTF-8"
+    CONFIGURE_ARGS: --with-intree-gmp
+    TEST_ENV: "x86_64-darwin"
   before_script:
     - git clean -xdf && git submodule foreach git clean -xdf
-    - python .gitlab/fix-submodules.py
+    - python3 .gitlab/fix-submodules.py
     - git submodule sync --recursive
     - git submodule update --init --recursive
     - git checkout .gitmodules
+    - "git fetch https://gitlab.haskell.org/ghc/ghc-performance-notes.git refs/notes/perf:refs/notes/perf || true"
 
     - bash .gitlab/darwin-init.sh
     - PATH="`pwd`/toolchain/bin:$PATH"
-      # Disable sphinx PDF output as MacTeX apparently doesn't provide xelatex
-    - echo "BUILD_SPHINX_PDF=NO" >> mk/build.mk
-    - echo "libraries/integer-gmp_CONFIGURE_OPTS += --configure-option=--with-intree-gmp" >> mk/build.mk
   after_script:
     - cp -Rf $HOME/.cabal cabal-cache
   artifacts:
@@ -150,6 +163,7 @@ validate-x86_64-darwin:
     - git submodule sync --recursive
     - git submodule update --init --recursive
     - git checkout .gitmodules
+    - "git fetch https://gitlab.haskell.org/ghc/ghc-performance-notes.git refs/notes/perf:refs/notes/perf || true"
 
     - bash .circleci/prepare-system.sh
     # workaround for docker permissions
@@ -167,6 +181,8 @@ validate-aarch64-linux-deb9:
   stage: full-build
   image: ghcci/aarch64-linux-deb9:0.1
   allow_failure: true
+  variables:
+    TEST_ENV: "aarch64-linux-deb9"
   artifacts:
     when: always
     expire_in: 2 week
@@ -191,6 +207,8 @@ validate-i386-linux-deb9:
   stage: full-build
   image: ghcci/i386-linux-deb9:0.1
   allow_failure: true
+  variables:
+    TEST_ENV: "i386-linux-deb9"
   artifacts:
     when: always
     expire_in: 2 week
@@ -204,6 +222,7 @@ nightly-i386-linux-deb9:
   allow_failure: true
   variables:
     TEST_TYPE: slowtest
+    TEST_ENV: "i386-linux-deb9"
   artifacts:
     when: always
     expire_in: 2 week
@@ -213,10 +232,23 @@ nightly-i386-linux-deb9:
   cache:
     key: linux-i386-deb9
 
+# N.B. Has DEBUG assertions enabled in stage2
+validate-x86_64-linux-deb9-debug:
+  extends: .validate-linux
+  stage: build
+  image: ghcci/x86_64-linux-deb9:0.2
+  variables:
+    BUILD_FLAVOUR: devel2
+    TEST_ENV: "x86_64-linux-deb9-debug"
+  cache:
+    key: linux-x86_64-deb9
+
 validate-x86_64-linux-deb9:
   extends: .validate-linux
   stage: build
   image: ghcci/x86_64-linux-deb9:0.2
+  variables:
+    TEST_ENV: "x86_64-linux-deb9"
   artifacts:
     when: always
     expire_in: 2 week
@@ -237,10 +269,10 @@ nightly-x86_64-linux-deb9:
 validate-x86_64-linux-deb9-llvm:
   extends: .validate-linux
   stage: full-build
-  allow_failure: true
   image: ghcci/x86_64-linux-deb9:0.2
   variables:
     BUILD_FLAVOUR: perf-llvm
+    TEST_ENV: "x86_64-linux-deb9-llvm"
   cache:
     key: linux-x86_64-deb9
 
@@ -248,6 +280,8 @@ validate-x86_64-linux-deb8:
   extends: .validate-linux
   stage: full-build
   image: ghcci/x86_64-linux-deb8:0.1
+  variables:
+    TEST_ENV: "x86_64-linux-deb8"
   cache:
     key: linux-x86_64-deb8
   artifacts:
@@ -258,6 +292,8 @@ validate-x86_64-linux-fedora27:
   extends: .validate-linux
   stage: full-build
   image: ghcci/x86_64-linux-fedora27:0.1
+  variables:
+    TEST_ENV: "x86_64-linux-fedora27"
   cache:
     key: linux-x86_64-fedora27
   artifacts:
@@ -269,6 +305,7 @@ validate-x86_64-linux-deb9-integer-simple:
   stage: full-build
   variables:
     INTEGER_LIBRARY: integer-simple
+    TEST_ENV: "x86_64-linux-deb9-integer-simple"
   image: ghcci/x86_64-linux-deb9:0.2
   cache:
     key: linux-x86_64-deb9
@@ -289,6 +326,7 @@ validate-x86_64-linux-deb9-unreg:
   stage: full-build
   variables:
     CONFIGURE_ARGS: --enable-unregisterised
+    TEST_ENV: "x86_64-linux-deb9-unreg"
   image: ghcci/x86_64-linux-deb9:0.2
   cache:
     key: linux-x86_64-deb9
@@ -314,11 +352,13 @@ validate-x86_64-linux-deb9-unreg:
     - git submodule sync --recursive
     - git submodule update --init --recursive
     - git checkout .gitmodules
+    - "git fetch https://gitlab.haskell.org/ghc/ghc-performance-notes.git refs/notes/perf:refs/notes/perf || true"
     - bash .gitlab/win32-init.sh
   after_script:
     - rd /s /q tmp
     - robocopy /np /nfl /ndl /e "%APPDATA%\cabal" cabal-cache
     - bash -c 'make clean || true'
+  dependencies: []
   cache:
     paths:
       - cabal-cache
@@ -328,8 +368,6 @@ validate-x86_64-linux-deb9-unreg:
 validate-x86_64-windows-hadrian:
   extends: .validate-windows
   stage: full-build
-  # due to #16073
-  allow_failure: true
   variables:
     GHC_VERSION: "8.6.2"
     LANG: "en_US.UTF-8"
@@ -340,10 +378,11 @@ validate-x86_64-windows-hadrian:
       bash -c './configure --enable-tarballs-autodownload GHC=`pwd`/toolchain/bin/ghc HAPPY=`pwd`/toolchain/bin/happy ALEX=`pwd`/toolchain/bin/alex'
       mkdir -p _build
       cp -R inplace/mingw _build/mingw
-    # FIXME: --no-lint due to #15950
-    - bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` --flavour=Quick --no-lint"
-    - bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh binary-dist"
-    - bash -c 'make V=0 test THREADS=`mk/detect-cpu-count.sh` JUNIT_FILE=../../junit.xml'
+    - bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` --flavour=Quick"
+    # FIXME: Bindist disabled due to #16073
+    #- bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh binary-dist"
+    # FIXME: Testsuite disabled due to #16156.
+    #- bash -c 'make V=0 test THREADS=`mk/detect-cpu-count.sh` JUNIT_FILE=../../junit.xml'
   cache:
     key: x86_64-windows
   tags:
@@ -364,38 +403,70 @@ validate-x86_64-windows:
       bash -c './configure --enable-tarballs-autodownload GHC=`pwd`/toolchain/bin/ghc HAPPY=`pwd`/toolchain/bin/happy ALEX=`pwd`/toolchain/bin/alex'
     - bash -c "echo include mk/flavours/quick.mk > mk/build.mk"
     - bash -c "PATH=`pwd`/toolchain/bin:$PATH make -j`mk/detect-cpu-count.sh`"
+    - |
+      bash -c "make binary-dist TAR_COMP_OPTS=-1"
+      mv ghc-*.tar.xz ghc.tar.xz
     - bash -c 'make V=0 test THREADS=`mk/detect-cpu-count.sh` JUNIT_FILE=../../junit.xml'
   cache:
     key: x86_64-windows
   tags:
     - x86_64-windows
-
-############################################################
-# Validation via CircleCI
-############################################################
-
-.circleci:
-  stage: build
-  image: ghcci/x86_64-linux-deb8:0.1
   artifacts:
     when: always
-    expire_in: 2 week
     reports:
       junit: junit.xml
     paths:
       - ghc.tar.xz
       - junit.xml
-  tags:
-    - circleci
 
-# All validation jobs keep the bindists and test results are artifacts,
-# when we get far enough to generate them.
+# Note [Cleaning up after shell executor]
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
-# This requires updating the maximum artifacts size limit in Gitlab to
-# something like 200MB.
+# As noted in [1], gitlab-runner's shell executor doesn't clean up its working
+# directory after builds. Unfortunately, we are forced to use the shell executor
+# on Windows. To avoid running out of disk space we add a stage at the end of
+# the build to remove the \GitLabRunner\builds directory. Since we only run a
+# single build at a time on Windows this should be safe.
+#
+# [1] https://gitlab.com/gitlab-org/gitlab-runner/issues/3856
 
-.circleci-validate-x86_64-darwin:
-  extends: .circleci
-  stage: full-build
-  allow_failure: true
-  script: ".gitlab/circle-ci-job.sh validate-x86_64-darwin"
+# See Note [Cleanup after shell executor]
+cleanup-windows:
+  stage: cleanup
+  tags:
+    - x86_64-windows
+  when: always
+  dependencies: []
+  before_script:
+    - echo "Time to clean up"
+  script:
+    - echo "Let's go"
+  after_script:
+    - set "BUILD_DIR=%CI_PROJECT_DIR%"
+    - set "BUILD_DIR=%BUILD_DIR:/=\%"
+    - echo "Cleaning %BUILD_DIR%"
+    - cd \GitLabRunner
+    # This is way more complicated than it should be:
+    # See https://stackoverflow.com/questions/1965787
+    - del %BUILD_DIR%\* /F /Q
+    - for /d %%p in (%BUILD_DIR%\*) do rd /Q /S "%%p"
+    - exit /b 0
+
+# See Note [Cleanup after shell executor]
+cleanup-darwin:
+  stage: cleanup
+  tags:
+    - x86_64-darwin
+  when: always
+  dependencies: []
+  before_script:
+    - echo "Time to clean up"
+  script:
+    - echo "Let's go"
+  after_script:
+    - BUILD_DIR=$CI_PROJECT_DIR
+    - echo "Cleaning $BUILD_DIR"
+    - cd $HOME
+    - rm -Rf $BUILD_DIR/*
+    - exit 0
+

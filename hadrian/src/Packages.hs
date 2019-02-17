@@ -4,9 +4,9 @@ module Packages (
     array, base, binary, bytestring, cabal, checkApiAnnotations, checkPpr,
     compareSizes, compiler, containers, deepseq, deriveConstants, directory,
     filepath, genapply, genprimopcode, ghc, ghcBoot, ghcBootTh, ghcCompact,
-    ghcHeap, ghci, ghcPkg, ghcPrim, ghcTags, ghcSplit, haddock, haskeline,
+    ghcHeap, ghci, ghcPkg, ghcPrim, ghcSplit, haddock, haskeline,
     hsc2hs, hp2ps, hpc, hpcBin, integerGmp, integerSimple, iserv, libffi,
-    libiserv, mtl, parsec, parallel, pretty, primitive, process, rts, runGhc,
+    libiserv, mtl, parsec, pretty, primitive, process, rts, runGhc,
     stm, templateHaskell, terminfo, text, time, timeout, touchy, transformers,
     unlit, unix, win32, xhtml, ghcPackages, isGhcPackage,
 
@@ -33,9 +33,9 @@ ghcPackages =
     [ array, base, binary, bytestring, cabal, checkPpr, checkApiAnnotations
     , compareSizes, compiler, containers, deepseq, deriveConstants, directory
     , filepath, genapply, genprimopcode, ghc, ghcBoot, ghcBootTh, ghcCompact
-    , ghcHeap, ghci, ghcPkg, ghcPrim, ghcTags, haddock, haskeline, hsc2hs, hp2ps
+    , ghcHeap, ghci, ghcPkg, ghcPrim, haddock, haskeline, hsc2hs, hp2ps
     , hpc, hpcBin, integerGmp, integerSimple, iserv, libffi, libiserv, mtl
-    , parsec, parallel, pretty, process, rts, runGhc, stm, templateHaskell
+    , parsec, pretty, process, rts, runGhc, stm, templateHaskell
     , terminfo, text, time, touchy, transformers, unlit, unix, win32, xhtml
     , timeout ]
 
@@ -68,7 +68,6 @@ ghcHeap             = lib  "ghc-heap"
 ghci                = lib  "ghci"
 ghcPkg              = util "ghc-pkg"
 ghcPrim             = lib  "ghc-prim"
-ghcTags             = util "ghctags"
 ghcSplit            = util "ghc-split"
 haddock             = util "haddock"
 haskeline           = lib  "haskeline"
@@ -83,7 +82,6 @@ libffi              = top  "libffi"
 libiserv            = lib  "libiserv"
 mtl                 = lib  "mtl"
 parsec              = lib  "parsec"
-parallel            = lib  "parallel"
 pretty              = lib  "pretty"
 primitive           = lib  "primitive"
 process             = lib  "process"
@@ -183,21 +181,23 @@ autogenPath context@Context {..}
   where
     autogen dir = contextPath context <&> (-/- dir -/- "autogen")
 
--- | RTS is considered a Stage1 package.
-rtsContext :: Context
-rtsContext = vanillaContext Stage1 rts
+-- | RTS is considered a Stage1 package. This determines RTS build directory.
+rtsContext :: Stage -> Context
+rtsContext stage = vanillaContext stage rts
 
 -- | Path to the RTS build directory.
-rtsBuildPath :: Action FilePath
-rtsBuildPath = buildPath rtsContext
+rtsBuildPath :: Stage -> Action FilePath
+rtsBuildPath stage = buildPath (rtsContext stage)
 
--- | The 'libffi' library is considered a 'Stage1' package.
-libffiContext :: Context
-libffiContext = vanillaContext Stage1 libffi
+-- | Build directory for libffi
+-- This probably doesn't need to be stage dependent but it is for
+-- consistency for now.
+libffiContext :: Stage -> Context
+libffiContext stage = vanillaContext stage libffi
 
 -- | Build directory for in-tree 'libffi' library.
-libffiBuildPath :: Action FilePath
-libffiBuildPath = buildPath libffiContext
+libffiBuildPath :: Stage -> Action FilePath
+libffiBuildPath stage = buildPath (libffiContext stage)
 
 -- | Name of the 'libffi' library.
 libffiLibraryName :: Action FilePath

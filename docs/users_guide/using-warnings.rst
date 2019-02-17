@@ -904,6 +904,27 @@ of ``-W(no-)*``.
     This option isn't enabled by default because it can be very noisy,
     and it often doesn't indicate a bug in the program.
 
+.. ghc-flag:: -Wmissing-deriving-strategies
+    :shortdesc: warn when a deriving clause is missing a deriving strategy
+    :type: dynamic
+    :reverse: -Wno-missing-deriving-strategies
+    :category:
+
+    :since: 8.8.1
+
+    The datatype below derives the ``Eq`` typeclass, but doesn't specify a
+    strategy. When :ghc-flag:`-Wmissing-deriving-strategies` is enabled,
+    the compiler will emit a warning about this. ::
+
+        data Foo a = Foo a
+          deriving (Eq)
+
+    The compiler will warn here that the deriving clause doesn't specify a
+    strategy. If the warning is enabled, but :extension:`DerivingStrategies` is
+    not enabled, the compiler will suggest turning on the
+    :extension:`DerivingStrategies` extension. This option is not on by default,
+    having to be turned on manually or with :ghc-flag:`-Weverything`.
+
 .. ghc-flag:: -Wmissing-fields
     :shortdesc: warn when fields of a record are uninitialised
     :type: dynamic
@@ -1544,9 +1565,9 @@ of ``-W(no-)*``.
 
     When :extension:`ExplicitForAll` is enabled, explicitly quantified type
     variables may also be identified as unused. For instance: ::
-      
+
         type instance forall x y. F x y = []
-    
+
     would still report ``x`` and ``y`` as unused on the right hand side
 
     Unlike :ghc-flag:`-Wunused-matches`, :ghc-flag:`-Wunused-type-patterns` is
@@ -1554,7 +1575,7 @@ of ``-W(no-)*``.
     unlike term-level pattern names, type names are often chosen expressly for
     documentation purposes, so using underscores in type names can make the
     documentation harder to read.
-    
+
 .. ghc-flag:: -Wunused-foralls
     :shortdesc: warn about type variables in user-written
         ``forall``\\s that are unused
@@ -1572,6 +1593,50 @@ of ``-W(no-)*``.
         g :: forall a b c. (b -> b)
 
     would report ``a`` and ``c`` as unused.
+
+.. ghc-flag:: -Wunused-record-wildcards
+    :shortdesc: Warn about record wildcard matches when none of the bound variables
+      are used.
+    :type: dynamic
+    :since: 8.10.1
+    :reverse: -Wno-unused-record-wildcards
+    :category:
+
+    .. index::
+       single: unused, warning, record wildcards
+
+    Report all record wildcards where none of the variables bound implicitly
+    are used. For instance: ::
+
+
+	data P = P { x :: Int, y :: Int }
+
+        f1 :: P -> Int
+        f1 P{..} = 1 + 3
+
+    would report that the ``P{..}`` match is unused.
+
+.. ghc-flag:: -Wredundant-record-wildcards
+    :shortdesc: Warn about record wildcard matches when the wildcard binds no patterns.
+    :type: dynamic
+    :since: 8.10.1
+    :reverse: -Wno-redundant-record-wildcards
+    :category:
+
+    .. index::
+       single: unused, warning, record wildcards
+
+    Report all record wildcards where the wild card match binds no patterns.
+    For instance: ::
+
+
+	data P = P { x :: Int, y :: Int }
+
+        f1 :: P -> Int
+        f1 P{x,y,..} = x + y
+
+    would report that the ``P{x, y, ..}`` match has a redundant use of ``..``.
+
 
 .. ghc-flag:: -Wwrong-do-bind
     :shortdesc: warn about do bindings that appear to throw away monadic values

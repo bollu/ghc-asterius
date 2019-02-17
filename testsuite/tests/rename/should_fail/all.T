@@ -110,8 +110,7 @@ test('T9815', normal, compile_fail, [''])
 
 test('T9032',
      normal,
-     run_command,
-     ['$MAKE -s --no-print-directory T9032'])
+     makefile_test, [])
 test('T10618', normal, compile_fail, [''])
 test('T10668', normal, compile_fail, [''])
 test('T5001b', normal, compile_fail, [''])
@@ -143,5 +142,7 @@ test('T15611a', normal, compile_fail, [''])
 test('T15611b', normal, ghci_script, ['T15611b.script'])
 test('T15828', normal, compile_fail, [''])
 test('T16002', normal, compile_fail, [''])
-
+test('T16114', normal, compile_fail, [''])
+test('T16116b', normal, compile_fail, [''])
 test('ExplicitForAllRules2', normal, compile_fail, [''])
+test('T15957_Fail', normal, compile_fail, ['-Werror -Wall -Wno-missing-signatures'])

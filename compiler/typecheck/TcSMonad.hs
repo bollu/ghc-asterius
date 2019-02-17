@@ -2611,7 +2611,9 @@ instance Applicative TcS where
   (<*>) = ap
 
 instance Monad TcS where
+#if !MIN_VERSION_base(4,13,0)
   fail = MonadFail.fail
+#endif
   m >>= k   = TcS (\ebs -> unTcS m ebs >>= \r -> unTcS (k r) ebs)
 
 instance MonadFail.MonadFail TcS where
@@ -3399,10 +3401,8 @@ newGivenEvVars loc pts = mapM (newGivenEvVar loc) pts
 emitNewWantedEq :: CtLoc -> Role -> TcType -> TcType -> TcS Coercion
 -- | Emit a new Wanted equality into the work-list
 emitNewWantedEq loc role ty1 ty2
-  | otherwise
   = do { (ev, co) <- newWantedEq loc role ty1 ty2
-       ; updWorkListTcS $
-         extendWorkListEq (mkNonCanonical ev)
+       ; updWorkListTcS (extendWorkListEq (mkNonCanonical ev))
        ; return co }
 
 -- | Make a new equality CtEvidence

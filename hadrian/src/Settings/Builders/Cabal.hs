@@ -13,6 +13,7 @@ cabalBuilderArgs :: Args
 cabalBuilderArgs = builder (Cabal Setup) ? do
     verbosity <- expr getVerbosity
     top       <- expr topDirectory
+    pkg       <- getPackage
     path      <- getContextPath
     stage     <- getStage
     mconcat [ arg "configure"
@@ -25,13 +26,24 @@ cabalBuilderArgs = builder (Cabal Setup) ? do
             , flag CrossCompiling ? pure [ "--disable-executable-stripping"
                                          , "--disable-library-stripping" ]
             , arg "--cabal-file"
-            , arg =<< pkgCabalFile <$> getPackage
+            , arg $ pkgCabalFile pkg
             , arg "--distdir"
             , arg $ top -/- path
             , arg "--ipid"
             , arg "$pkg-$version"
             , arg "--prefix"
             , arg "${pkgroot}/.."
+
+            -- NB: this is valid only because Hadrian puts the @docs@ and
+            -- @libraries@ folders in the same relative position:
+            --
+            --   * libraries in @_build/stageN/libraries@
+            --   * docs in @_build/docs/html/libraries@
+            --
+            -- This doesn't hold if we move the @docs@ folder anywhere else.
+            , arg "--htmldir"
+            , arg $ "${pkgroot}/../../docs/html/libraries/" ++ pkgName pkg
+
             , withStaged $ Ghc CompileHs
             , withStaged (GhcPkg Update)
             , withBuilderArgs (GhcPkg Update stage)
@@ -57,19 +69,24 @@ libraryArgs :: Args
 libraryArgs = do
     flavourWays <- getLibraryWays
     contextWay  <- getWay
+    package     <- getPackage
     withGhci    <- expr ghcWithInterpreter
     dynPrograms <- expr (flavour >>= dynamicGhcPrograms)
     let ways = flavourWays ++ [contextWay]
-    pure [ if vanilla `elem` ways
+        hasVanilla = vanilla `elem` ways
+        hasProfiling = any (wayUnit Profiling) ways
+        hasDynamic = any (wayUnit Dynamic) ways
+    pure [ if hasVanilla
            then  "--enable-library-vanilla"
            else "--disable-library-vanilla"
-         , if vanilla `elem` ways && withGhci && not dynPrograms
-           then  "--enable-library-for-ghci"
-           else "--disable-library-for-ghci"
-         , if or [Profiling `wayUnit` way | way <- ways]
+         , if hasProfiling
            then  "--enable-library-profiling"
            else "--disable-library-profiling"
-         , if or [Dynamic `wayUnit` way | way <- ways]
+         , if (hasVanilla || hasProfiling) &&
+              package /= rts && withGhci && not dynPrograms
+           then  "--enable-library-for-ghci"
+           else "--disable-library-for-ghci"
+         , if hasDynamic
            then  "--enable-shared"
            else "--disable-shared" ]
 

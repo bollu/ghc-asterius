@@ -680,7 +680,9 @@ countTyClDecls decls
 -- | Does this declaration have a complete, user-supplied kind signature?
 -- See Note [CUSKs: complete user-supplied kind signatures]
 hsDeclHasCusk :: TyClDecl GhcRn -> Bool
-hsDeclHasCusk (FamDecl { tcdFam = fam_decl }) = famDeclHasCusk Nothing fam_decl
+hsDeclHasCusk (FamDecl { tcdFam = fam_decl })
+  = famDeclHasCusk False fam_decl
+    -- False: this is not: an associated type of a class with no cusk
 hsDeclHasCusk (SynDecl { tcdTyVars = tyvars, tcdRhs = rhs })
   -- NB: Keep this synchronized with 'getInitialKind'
   = hsTvbAllKinded tyvars && rhs_annotated rhs
@@ -796,7 +798,7 @@ Examples:
 
  * data T2 a b = ...
    -- No CUSK; we do not want to guess T2 :: * -> * -> *
-   -- becuase the full decl might be   data T a b = MkT (a b)
+   -- because the full decl might be   data T a b = MkT (a b)
 
   * data T3 (a :: k -> *) (b :: *) = ...
     -- CUSK; equivalent to   T3 :: (k -> *) -> * -> *
@@ -1078,15 +1080,22 @@ data FamilyInfo pass
 
 -- | Does this family declaration have a complete, user-supplied kind signature?
 -- See Note [CUSKs: complete user-supplied kind signatures]
-famDeclHasCusk :: Maybe Bool
-                   -- ^ if associated, does the enclosing class have a CUSK?
-               -> FamilyDecl pass -> Bool
-famDeclHasCusk _ (FamilyDecl { fdInfo      = ClosedTypeFamily _
-                             , fdTyVars    = tyvars
-                             , fdResultSig = L _ resultSig })
-  = hsTvbAllKinded tyvars && hasReturnKindSignature resultSig
-famDeclHasCusk mb_class_cusk _ = mb_class_cusk `orElse` True
-        -- all un-associated open families have CUSKs
+famDeclHasCusk :: Bool -- ^ True <=> this is an associated type family,
+                       --            and the parent class has /no/ CUSK
+               -> FamilyDecl pass
+               -> Bool
+famDeclHasCusk assoc_with_no_cusk
+               (FamilyDecl { fdInfo      = fam_info
+                           , fdTyVars    = tyvars
+                           , fdResultSig = L _ resultSig })
+  = case fam_info of
+      ClosedTypeFamily {} -> hsTvbAllKinded tyvars
+                          && hasReturnKindSignature resultSig
+      _ -> not assoc_with_no_cusk
+            -- Un-associated open type/data families have CUSKs
+            -- Associated type families have CUSKs iff the parent class does
+
+famDeclHasCusk _ (XFamilyDecl {}) = panic "famDeclHasCusk"
 
 -- | Does this family declaration have user-supplied return kind signature?
 hasReturnKindSignature :: FamilyResultSig a -> Bool

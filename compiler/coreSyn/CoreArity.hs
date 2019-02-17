@@ -153,9 +153,7 @@ exprBotStrictness_maybe e
         Just ar -> Just (ar, sig ar)
   where
     env    = AE { ae_ped_bot = True, ae_cheap_fn = \ _ _ -> False }
-    sig ar = mkClosedStrictSig (replicate ar topDmd) exnRes
-                  -- For this purpose we can be very simple
-                  -- exnRes is a bit less aggressive than botRes
+    sig ar = mkClosedStrictSig (replicate ar topDmd) botRes
 
 {-
 Note [exprArity invariant]
@@ -598,7 +596,7 @@ The analysis is easy to achieve because exprEtaExpandArity takes an
 argument
      type CheapFun = CoreExpr -> Maybe Type -> Bool
 used to decide if an expression is cheap enough to push inside a
-lambda.  And exprIsCheap' in turn takes an argument
+lambda.  And exprIsCheapX in turn takes an argument
      type CheapAppFun = Id -> Int -> Bool
 which tells when an application is cheap. This makes it easy to
 write the analysis loop.

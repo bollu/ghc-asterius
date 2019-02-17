@@ -34,6 +34,7 @@ module DynFlags (
         wopt, wopt_set, wopt_unset,
         wopt_fatal, wopt_set_fatal, wopt_unset_fatal,
         xopt, xopt_set, xopt_unset,
+        xopt_set_unlessExplSpec,
         lang_set,
         useUnicodeSyntax,
         useStarIsType,
@@ -581,6 +582,7 @@ data GeneralFlag
    -- output style opts
    | Opt_ErrorSpans -- Include full span info in error messages,
                     -- instead of just the start position.
+   | Opt_DeferDiagnostics
    | Opt_DiagnosticsShowCaret -- Show snippets of offending code
    | Opt_PprCaseAsLet
    | Opt_PprShowTicks
@@ -646,6 +648,7 @@ data GeneralFlag
    -- safe haskell flags
    | Opt_DistrustAllPackages
    | Opt_PackageTrust
+   | Opt_PluginTrustworthy
 
    | Opt_G_NoStateHack
    | Opt_G_NoOptCoercion
@@ -787,6 +790,8 @@ data WarningFlag =
    | Opt_WarnUnusedMatches
    | Opt_WarnUnusedTypePatterns
    | Opt_WarnUnusedForalls
+   | Opt_WarnUnusedRecordWildcards
+   | Opt_WarnRedundantRecordWildcards
    | Opt_WarnWarningsDeprecations
    | Opt_WarnDeprecatedFlags
    | Opt_WarnMissingMonadFailInstances -- since 8.0
@@ -834,6 +839,7 @@ data WarningFlag =
    | Opt_WarnStarBinder                   -- Since 8.6
    | Opt_WarnImplicitKindVars             -- Since 8.6
    | Opt_WarnSpaceAfterBang
+   | Opt_WarnMissingDerivingStrategies    -- Since 8.8
    deriving (Eq, Show, Enum)
 
 data Language = Haskell98 | Haskell2010
@@ -908,6 +914,9 @@ data DynFlags = DynFlags {
   specConstrCount       :: Maybe Int,   -- ^ Max number of specialisations for any one function
   specConstrRecursive   :: Int,         -- ^ Max number of specialisations for recursive types
                                         --   Not optional; otherwise ForceSpecConstr can diverge.
+  binBlobThreshold      :: Word,        -- ^ Binary literals (e.g. strings) whose size is above
+                                        --   this threshold will be dumped in a binary file
+                                        --   by the assembler code generator (0 to disable)
   liberateCaseThreshold :: Maybe Int,   -- ^ Threshold for LiberateCase
   floatLamArgs          :: Maybe Int,   -- ^ Arg count for lambda floating
                                         --   See CoreMonad.FloatOutSwitches
@@ -1077,6 +1086,9 @@ data DynFlags = DynFlags {
   warnUnsafeOnLoc       :: SrcSpan,
   trustworthyOnLoc      :: SrcSpan,
   -- Don't change this without updating extensionFlags:
+  -- Here we collect the settings of the language extensions
+  -- from the command line, the ghci config file and
+  -- from interactive :set / :seti commands.
   extensions            :: [OnOff LangExt.Extension],
   -- extensionFlags should always be equal to
   --     flattenExtensionFlags language extensions
@@ -1875,6 +1887,7 @@ defaultDynFlags mySettings (myLlvmTargets, myLlvmPasses) =
         maxPmCheckIterations    = 2000000,
         ruleCheck               = Nothing,
         inlineCheck             = Nothing,
+        binBlobThreshold        = 500000, -- 500K is a good default (see #16190)
         maxRelevantBinds        = Just 6,
         maxValidHoleFits   = Just 6,
         maxRefHoleFits     = Just 6,
@@ -2374,6 +2387,19 @@ xopt_unset dfs f
     = let onoffs = Off f : extensions dfs
       in dfs { extensions = onoffs,
                extensionFlags = flattenExtensionFlags (language dfs) onoffs }
+
+-- | Set or unset a 'LangExt.Extension', unless it has been explicitly
+--   set or unset before.
+xopt_set_unlessExplSpec
+        :: LangExt.Extension
+        -> (DynFlags -> LangExt.Extension -> DynFlags)
+        -> DynFlags -> DynFlags
+xopt_set_unlessExplSpec ext setUnset dflags =
+    let referedExts = stripOnOff <$> extensions dflags
+        stripOnOff (On x)  = x
+        stripOnOff (Off x) = x
+    in
+        if ext `elem` referedExts then dflags else setUnset dflags ext
 
 lang_set :: DynFlags -> Maybe Language -> DynFlags
 lang_set dflags lang =
@@ -3491,6 +3517,8 @@ dynamic_flags_deps = [
 
         ------ Plugin flags ------------------------------------------------
   , make_ord_flag defGhcFlag "fplugin-opt" (hasArg addPluginModuleNameOption)
+  , make_ord_flag defGhcFlag "fplugin-trustworthy"
+      (NoArg (setGeneralFlag Opt_PluginTrustworthy))
   , make_ord_flag defGhcFlag "fplugin"     (hasArg addPluginModuleName)
   , make_ord_flag defGhcFlag "fclear-plugins" (noArg clearPluginModuleNames)
   , make_ord_flag defGhcFlag "ffrontend-opt" (hasArg addFrontendPluginOption)
@@ -3502,6 +3530,8 @@ dynamic_flags_deps = [
                                                 setOptLevel (mb_n `orElse` 1)))
                 -- If the number is missing, use 1
 
+  , make_ord_flag defFlag "fbinary-blob-threshold"
+      (intSuffix (\n d -> d { binBlobThreshold = fromIntegral n }))
 
   , make_ord_flag defFlag "fmax-relevant-binds"
       (intSuffix (\n d -> d { maxRelevantBinds = Just n }))
@@ -4016,10 +4046,13 @@ wWarningFlagsDeps = [
   flagSpec "unused-pattern-binds"        Opt_WarnUnusedPatternBinds,
   flagSpec "unused-top-binds"            Opt_WarnUnusedTopBinds,
   flagSpec "unused-type-patterns"        Opt_WarnUnusedTypePatterns,
+  flagSpec "unused-record-wildcards"     Opt_WarnUnusedRecordWildcards,
+  flagSpec "redundant-record-wildcards"  Opt_WarnRedundantRecordWildcards,
   flagSpec "warnings-deprecations"       Opt_WarnWarningsDeprecations,
   flagSpec "wrong-do-bind"               Opt_WarnWrongDoBind,
   flagSpec "missing-pattern-synonym-signatures"
                                     Opt_WarnMissingPatternSynonymSignatures,
+  flagSpec "missing-deriving-strategies" Opt_WarnMissingDerivingStrategies,
   flagSpec "simplifiable-class-constraints" Opt_WarnSimplifiableClassConstraints,
   flagSpec "missing-home-modules"        Opt_WarnMissingHomeModules,
   flagSpec "unrecognised-warning-flags"  Opt_WarnUnrecognisedWarningFlags,
@@ -4080,6 +4113,7 @@ fFlagsDeps = [
   flagSpec "stg-cse"                          Opt_StgCSE,
   flagSpec "stg-lift-lams"                    Opt_StgLiftLams,
   flagSpec "cpr-anal"                         Opt_CprAnal,
+  flagSpec "defer-diagnostics"                Opt_DeferDiagnostics,
   flagSpec "defer-type-errors"                Opt_DeferTypeErrors,
   flagSpec "defer-typed-holes"                Opt_DeferTypedHoles,
   flagSpec "defer-out-of-scope-variables"     Opt_DeferOutOfScopeVariables,
@@ -4767,7 +4801,9 @@ minusWallOpts
         Opt_WarnUnusedDoBind,
         Opt_WarnTrustworthySafe,
         Opt_WarnUntickedPromotedConstructors,
-        Opt_WarnMissingPatternSynonymSignatures
+        Opt_WarnMissingPatternSynonymSignatures,
+        Opt_WarnUnusedRecordWildcards,
+        Opt_WarnRedundantRecordWildcards
       ]
 
 -- | Things you get with -Weverything, i.e. *all* known warnings flags

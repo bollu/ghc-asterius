@@ -96,11 +96,11 @@ module GHC (
         -- * Interactive evaluation
 
         -- ** Executing statements
-        execStmt, ExecOptions(..), execOptions, ExecResult(..),
+        execStmt, execStmt', ExecOptions(..), execOptions, ExecResult(..),
         resumeExec,
 
         -- ** Adding new declarations
-        runDecls, runDeclsWithLocation,
+        runDecls, runDeclsWithLocation, runParsedDecls,
 
         -- ** Get/set the current context
         parseImportDecl,
@@ -313,7 +313,7 @@ import NameSet
 import RdrName
 import HsSyn
 import Type     hiding( typeKind )
-import TcType           hiding( typeKind )
+import TcType
 import Id
 import TysPrim          ( alphaTyVars )
 import TyCon
@@ -522,7 +522,7 @@ checkBrokenTablesNextToCode dflags
   = do { broken <- checkBrokenTablesNextToCode' dflags
        ; when broken
          $ do { _ <- liftIO $ throwIO $ mkApiErr dflags invalidLdErr
-              ; fail "unsupported linker"
+              ; liftIO $ fail "unsupported linker"
               }
        }
   where

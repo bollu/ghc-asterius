@@ -152,8 +152,8 @@ builderProvenance = \case
     Ghc _ Stage0     -> Nothing
     Ghc _ stage      -> context (pred stage) ghc
     GhcPkg _ Stage0  -> Nothing
-    GhcPkg _ _       -> context Stage0 ghcPkg
-    Haddock _        -> context Stage2 haddock
+    GhcPkg _ s       -> context (pred s) ghcPkg
+    Haddock _        -> context Stage1 haddock
     Hpc              -> context Stage1 hpcBin
     Hp2Ps            -> context Stage0 hp2ps
     Hsc2Hs _         -> context Stage0 hsc2hs
@@ -187,6 +187,7 @@ instance H.Builder Builder where
 
         Hsc2Hs stage -> (\p -> [p]) <$> templateHscPath stage
         Make dir  -> return [dir -/- "Makefile"]
+        Haddock _ -> haddockDeps Stage1  -- Haddock currently runs in Stage1
         _         -> return []
 
     -- query the builder for some information.

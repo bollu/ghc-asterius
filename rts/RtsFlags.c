@@ -236,6 +236,7 @@ void initRtsFlagsDefaults(void)
     RtsFlags.MiscFlags.generate_dump_file      = false;
     RtsFlags.MiscFlags.machineReadable         = false;
     RtsFlags.MiscFlags.internalCounters        = false;
+    RtsFlags.MiscFlags.linkerAlwaysPic         = DEFAULT_LINKER_ALWAYS_PIC;
     RtsFlags.MiscFlags.linkerMemBase           = 0;
 
 #if defined(THREADED_RTS)
@@ -323,9 +324,11 @@ usage_text[] = {
 "  -Pa        Give information about *all* cost centres in tree format",
 "  -pj        Output cost-center profile in JSON format",
 "",
+"  -h         Heap residency profile, by cost centre stack",
 "  -h<break-down> Heap residency profile (hp2ps) (output file <program>.hp)",
 "     break-down: c = cost centre stack (default)",
 "                 m = module",
+"                 T = closure type",
 "                 d = closure description",
 "                 y = type description",
 "                 r = retainer",
@@ -347,9 +350,10 @@ usage_text[] = {
 "  -xt            Include threads (TSOs) in a heap profile",
 "",
 "  -xc      Show current cost centre stack on raising an exception",
+#else /* PROFILING */
+"  -h       Heap residency profile (output file <program>.hp)",
+"  -hT      Produce a heap profile grouped by closure type",
 #endif /* PROFILING */
-"",
-"  -hT            Produce a heap profile grouped by closure type"
 
 #if defined(TRACING)
 "",
@@ -372,10 +376,6 @@ usage_text[] = {
 "             the initial enabled event classes are 'sgpu'",
 #endif
 
-#if !defined(PROFILING)
-"",
-"  -h       Heap residency profile (output file <program>.hp)",
-#endif
 "  -i<sec>  Time between heap profile samples (seconds, default: 0.1)",
 "",
 #if defined(TICKY_TICKY)
@@ -458,6 +458,11 @@ usage_text[] = {
 "  -e<n>     Maximum number of outstanding local sparks (default: 4096)",
 #endif
 #if defined(x86_64_HOST_ARCH)
+#if !DEFAULT_LINKER_ALWAYS_PIC
+"  -xp       Assume that all object files were compiled with -fPIC",
+"            -fexternal-dynamic-refs and load them anywhere in the address",
+"            space",
+#endif
 "  -xm       Base address to mmap memory in the GHCi linker",
 "            (hex; must be <80000000)",
 #endif
@@ -1503,6 +1508,11 @@ error = true;
                     break;
 
 #if defined(x86_64_HOST_ARCH)
+                case 'p': /* linkerAlwaysPic */
+                    OPTION_UNSAFE;
+                    RtsFlags.MiscFlags.linkerAlwaysPic = true;
+                    break;
+
                 case 'm': /* linkerMemBase */
                     OPTION_UNSAFE;
                     if (rts_argv[arg][3] != '\0') {
@@ -1906,6 +1916,7 @@ static bool read_heap_profiling_flag(const char *arg)
     case 'r':
     case 'B':
     case 'b':
+    case 'T':
         if (arg[2] != '\0' && arg[3] != '\0') {
             {
                 const char *left  = strchr(arg, '{');

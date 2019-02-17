@@ -81,7 +81,7 @@ import DynFlags
 import Data.List
 
 import Data.Char        ( ord )
-import Control.Monad.Fail ( MonadFail )
+import Control.Monad.Fail as MonadFail ( MonadFail )
 
 infixl 4 `mkCoreApp`, `mkCoreApps`
 
@@ -302,7 +302,7 @@ mkStringExprFSWith lookupM str
   where
     chars = unpackFS str
     safeChar c = ord c >= 1 && ord c <= 0x7F
-    lit = Lit (LitString (fastStringToByteString str))
+    lit = Lit (LitString (bytesFS str))
 
 {-
 ************************************************************************
@@ -600,7 +600,7 @@ mkFoldrExpr elt_ty result_ty c n list = do
            `App` list)
 
 -- | Make a 'build' expression applied to a locally-bound worker function
-mkBuildExpr :: (MonadFail m, MonadThings m, MonadUnique m)
+mkBuildExpr :: (MonadFail.MonadFail m, MonadThings m, MonadUnique m)
             => Type                                     -- ^ Type of list elements to be built
             -> ((Id, Type) -> (Id, Type) -> m CoreExpr) -- ^ Function that, given information about the 'Id's
                                                         -- of the binders for the build worker function, returns
@@ -758,7 +758,7 @@ tYPE_ERROR_ID                   = mkRuntimeErrorId typeErrorName
 aBSENT_SUM_FIELD_ERROR_ID
   = mkVanillaGlobalWithInfo absentSumFieldErrorName
       (mkSpecForAllTys [alphaTyVar] (mkTyVarTy alphaTyVar)) -- forall a . a
-      (vanillaIdInfo `setStrictnessInfo` mkClosedStrictSig [] exnRes
+      (vanillaIdInfo `setStrictnessInfo` mkClosedStrictSig [] botRes
                      `setArityInfo` 0
                      `setCafInfo` NoCafRefs) -- #15038
 
@@ -785,8 +785,7 @@ mkRuntimeErrorId name
         -- any pc_bottoming_Id will itself have CafRefs, which bloats
         -- SRTs.
 
-    strict_sig = mkClosedStrictSig [evalDmd] exnRes
-              -- exnRes: these throw an exception, not just diverge
+    strict_sig = mkClosedStrictSig [evalDmd] botRes
 
 runtimeErrorTy :: Type
 -- forall (rr :: RuntimeRep) (a :: rr). Addr# -> a

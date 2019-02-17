@@ -51,12 +51,15 @@ libPath :: Context -> Action FilePath
 libPath context = buildRoot <&> (-/- libDir context)
 
 -- | Get the directory name for binary distribution files
--- <arch>-<os>-ghc-<version>.
+-- @<arch>-<os>-ghc-<version>@.
+--
+-- We preform some renaming to accomodate Cabal's slightly different naming
+-- conventions (see 'cabalOsString' and 'cabalArchString').
 distDir :: Action FilePath
 distDir = do
     version        <- setting ProjectVersion
-    hostOs         <- setting BuildOs
-    hostArch       <- setting BuildArch
+    hostOs         <- cabalOsString <$> setting BuildOs
+    hostArch       <- cabalArchString <$> setting BuildArch
     return $ hostArch ++ "-" ++ hostOs ++ "-ghc-" ++ version
 
 pkgFile :: Context -> String -> String -> Action FilePath
@@ -96,14 +99,16 @@ pkgLibraryFile context@Context {..} = do
 -- | Path to the GHCi library file of a given 'Context', e.g.:
 -- @_build/stage1/libraries/array/build/HSarray-0.5.1.0.o@.
 pkgGhciLibraryFile :: Context -> Action FilePath
-pkgGhciLibraryFile context = pkgFile context "HS" ".o"
+pkgGhciLibraryFile context@Context {..} = do
+    let extension = "" <.> osuf way
+    pkgFile context "HS" extension
 
 -- | Path to the configuration file of a given 'Context'.
 pkgConfFile :: Context -> Action FilePath
 pkgConfFile Context {..} = do
-    root <- buildRoot
     pid  <- pkgIdentifier package
-    return $ root -/- relativePackageDbPath stage -/- pid <.> "conf"
+    dbPath <- packageDbPath stage
+    return $ dbPath -/- pid <.> "conf"
 
 -- | Given a 'Context' and a 'FilePath' to a source file, compute the 'FilePath'
 -- to its object file. For example:

@@ -108,7 +108,9 @@ stage1Packages = do
              , stm
              , time
              , unlit
-             , xhtml                         ]
+             , xhtml                     
+             ]
+          ++ [ haddock | not cross           ]
           ++ [ hpcBin   | not cross          ]
           ++ [ iserv    | not win, not cross ]
           ++ [ libiserv | not win, not cross ]
@@ -119,10 +121,7 @@ stage1Packages = do
 
 -- | Packages built in 'Stage2' by default. You can change this in "UserSettings".
 stage2Packages :: Action [Package]
-stage2Packages = do
-    cross <- flag CrossCompiling
-    return $ [ ghcTags             ]
-          ++ [ haddock | not cross ]
+stage2Packages = stage1Packages
 
 -- | Packages that are built only for the testsuite.
 testsuitePackages :: Action [Package]
@@ -136,7 +135,6 @@ testsuitePackages = do
              , hp2ps
              , hsc2hs
              , iserv
-             , parallel
              , runGhc
              , unlit         ] ++
              [ timeout | win ]
@@ -278,4 +276,5 @@ defaultBuilderArgs = mconcat
 
 -- | All 'Package'-dependent command line arguments.
 defaultPackageArgs :: Args
-defaultPackageArgs = mconcat [ packageArgs, warningArgs ]
+defaultPackageArgs = mconcat [ packageArgs
+                             , builder Ghc ? ghcWarningsArgs ]

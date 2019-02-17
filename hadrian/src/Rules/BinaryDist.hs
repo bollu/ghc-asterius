@@ -98,14 +98,12 @@ bindistRules = do
 
         version        <- setting ProjectVersion
         targetPlatform <- setting TargetPlatformFull
-        cabalHostOs    <- cabalOsString <$> setting BuildOs
-        cabalHostArch  <- cabalArchString <$> setting BuildArch
+        distDir        <- Context.distDir
         rtsDir         <- pkgIdentifier rts
 
         let ghcBuildDir      = root -/- stageString Stage1
             bindistFilesDir  = root -/- "bindist" -/- ghcVersionPretty
             ghcVersionPretty = "ghc-" ++ version ++ "-" ++ targetPlatform
-            distDir          = cabalHostArch ++ "-" ++ cabalHostOs ++ "-ghc-" ++ version
             rtsIncludeDir    = ghcBuildDir -/- "lib" -/- distDir -/- rtsDir
                                -/- "include"
 
@@ -118,9 +116,9 @@ bindistRules = do
         need ["docs"]
         copyDirectory (root -/- "docs") bindistFilesDir
 
-        -- We copy the binary (<build root>/stage2/bin/haddock) to
+        -- We copy the binary (<build root>/stage1/bin/haddock) to
         -- the bindist's bindir (<build root>/bindist/ghc-.../bin/).
-        haddockPath <- programPath (vanillaContext Stage2 haddock)
+        haddockPath <- programPath (vanillaContext Stage1 haddock)
         copyFile haddockPath (bindistFilesDir -/- "bin" -/- "haddock")
 
         -- We then 'need' all the files necessary to configure and install
@@ -241,12 +239,25 @@ bindistMakefile = unlines
     , "\t$(EXECUTABLE_FILE) $2 ;"
     , "endef"
     , ""
+    , "# Hacky function to patch up the 'haddock-interfaces' and 'haddock-html'"
+    , "# fields in the package .conf files"
+    , "define patchpackageconf"
+    , "# $1 = package name (ex: 'bytestring')"
+    , "# $2 = path to .conf file"
+    , "# $3 = Docs Directory"
+    , "\tcat $2 | sed 's|haddock-interfaces.*|haddock-interfaces: $3/html/libraries/$1/$1.haddock|' \\"
+    , "\t       | sed 's|haddock-html.*|haddock-html: $3/html/libraries/$1|' \\"
+    , "\t       > $2.copy"
+    , "\tmv $2.copy $2"
+    , "endef"
+    , ""
     , "# QUESTION : should we use shell commands?"
     , ""
     , ""
     , ".PHONY: install"
     , "install: install_lib install_bin install_includes"
     , "install: install_docs install_wrappers install_ghci"
+    , "install: update_package_db"
     , ""
     , "ActualBinsDir=${ghclibdir}/bin"
     , "WrapperBinsDir=${bindir}"
@@ -299,6 +310,15 @@ bindistMakefile = unlines
     , "\t\t$(call installscript,$p,$(WrapperBinsDir)/$p," ++
       "$(WrapperBinsDir),$(ActualBinsDir),$(ActualBinsDir)/$p," ++
       "$(libdir),$(docdir),$(includedir)))"
+    , ""
+    , "PKG_CONFS = $(wildcard $(libdir)/package.conf.d/*)"
+    , "update_package_db:"
+    , "\t@echo \"Updating the package DB\""
+    , "\t$(foreach p, $(PKG_CONFS),\\"
+    , "\t\t$(call patchpackageconf," ++
+      "$(shell echo $(notdir $p) | sed 's/-\\([0-9]*[0-9]\\.\\)*conf//g')," ++
+      "$p,$(docdir)))"
+    , "\t$(WrapperBinsDir)/ghc-pkg recache"
     , ""
     , "# END INSTALL"
     , "# ----------------------------------------------------------------------"

@@ -14,8 +14,7 @@ test('T3171',
       skip, # This test is quite flaky (#15383)
       req_interp,
       combined_output],
-     run_command,
-     ['$MAKE -s --no-print-directory T3171'])
+     makefile_test, [])
 
 test('ghcirun004', just_ghci, compile_and_run, [''])
 test('T8377',      just_ghci, compile_and_run, [''])
@@ -23,6 +22,10 @@ test('T9914',      just_ghci, ghci_script, ['T9914.script'])
 test('T9915',      just_ghci, ghci_script, ['T9915.script'])
 test('T10145',     just_ghci, ghci_script, ['T10145.script'])
 test('T7253',      just_ghci, ghci_script, ['T7253.script'])
+test('T10857a',    just_ghci, ghci_script, ['T10857a.script'])
+test('T10857b',
+      [extra_hc_opts("-XMonomorphismRestriction -XNoExtendedDefaultRules")],
+                   ghci_script, ['T10857b.script'])
 test('T11328',     just_ghci, ghci_script, ['T11328.script'])
 test('T11825',     just_ghci, ghci_script, ['T11825.script'])
 test('T12128',     just_ghci, ghci_script, ['T12128.script'])
@@ -56,3 +59,5 @@ test('T15633b',
       extra_hc_opts("-package-db tc-plugin-ghci/pkg.plugins01/local.package.conf")
       ],
      ghci_script, ['T15633b.script'])
+
+test('T16096', just_ghci, ghci_script, ['T16096.script'])

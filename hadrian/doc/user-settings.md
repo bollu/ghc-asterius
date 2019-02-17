@@ -102,11 +102,26 @@ patterns such as `"//Prelude.*"` can be used when matching input and output file
 where `//` matches an arbitrary number of path components and `*` matches an entire
 path component, excluding any separators.
 
+### Enabling -Werror
+
+It is useful to enable `-Werror` when building GHC as this setting is
+used in the CI to ensure a warning free build. The `werror` function can be
+used to easily modify a flavour to turn this setting on.
+
+```
+devel2WerrorFlavour :: Flavour
+devel2WerrorFlavour = werror (developmentFlavour Stage2)
+```
+
 ## Packages
 
 Users can add and remove packages from particular build stages. As an example,
 below we add package `base` to Stage0 and remove package `haskeline` from Stage1:
 ```haskell
+...
+import Packages
+...
+
 userFlavour :: Flavour
 userFlavour = defaultFlavour { name = "user", packages = modifiedPackages }
 
@@ -136,8 +151,24 @@ You can choose which integer library to use when builing GHC using the
 (default) and `integerSimple`.
 ```haskell
 userFlavour :: Flavour
-userFlavour = defaultFlavour { name = "user", integerLibrary = integerSimple }
+userFlavour = defaultFlavour { name = "user", integerLibrary = pure integerSimple }
 ```
+
+### Specifying the final stage to build
+
+The `finalStage` variable can be set to indicate after which stage we should
+stop the compilation pipeline. By default it is set to `Stage2` which indicates
+that we will build everything which uses the `Stage1` `ghc` and then stop.
+
+```
+finalStage :: Stage
+finalStage = Stage2
+```
+
+Using this mechanism we can also build a `Stage3` compiler by setting
+`finalStage = Stage3` or just a `Stage1` compiler by setting
+`finalStage = Stage1`.
+
 ## Build ways
 
 Packages can be built in a number of ways, such as `vanilla`, `profiling` (with
@@ -201,10 +232,6 @@ verboseCommand = return True
 ```
 
 ## Miscellaneous
-
-By setting `stage1Only = True` you can disable building Stage2 GHC and Stage2
-utilities such as `haddock`. Note that all Stage0 and Stage1 libraries will
-still be built.
 
 To change the default behaviour of Hadrian with respect to building split
 objects, override the `splitObjects` setting of the `Flavour` record:

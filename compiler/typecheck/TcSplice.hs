@@ -26,7 +26,7 @@ module TcSplice(
      runMetaE, runMetaP, runMetaT, runMetaD, runQuasi,
      tcTopSpliceExpr, lookupThName_maybe,
      defaultRunMeta, runMeta', runRemoteModFinalizers,
-     finishTH
+     finishTH, runTopSplice
       ) where
 
 #include "HsVersions.h"
@@ -57,8 +57,7 @@ import GHCi
 import HscMain
         -- These imports are the reason that TcSplice
         -- is very high up the module hierarchy
-import FV
-import RnSplice( traceSplice, SpliceInfo(..) )
+import RnSplice( traceSplice, SpliceInfo(..))
 import RdrName
 import HscTypes
 import Convert
@@ -491,28 +490,49 @@ tcTopSplice expr res_ty
          -- making sure it has type Q (T res_ty)
          res_ty <- expTypeToType res_ty
        ; meta_exp_ty <- tcTExpTy res_ty
-       ; zonked_q_expr <- tcTopSpliceExpr Typed $
+       ; q_expr <- tcTopSpliceExpr Typed $
                           tcMonoExpr expr (mkCheckExpType meta_exp_ty)
+       ; lcl_env <- getLclEnv
+       ; let delayed_splice
+              = DelayedSplice lcl_env expr res_ty q_expr
+       ; return (HsSpliceE noExt (HsSplicedT delayed_splice))
 
-         -- See Note [Collecting modFinalizers in typed splices].
+       }
+
+
+-- This is called in the zonker
+-- See Note [Running typed splices in the zonker]
+runTopSplice :: DelayedSplice -> TcM (HsExpr GhcTc)
+runTopSplice (DelayedSplice lcl_env orig_expr res_ty q_expr)
+  = setLclEnv lcl_env $ do {
+         zonked_ty <- zonkTcType res_ty
+       ; zonked_q_expr <- zonkTopLExpr q_expr
+        -- See Note [Collecting modFinalizers in typed splices].
        ; modfinalizers_ref <- newTcRef []
          -- Run the expression
        ; expr2 <- setStage (RunSplice modfinalizers_ref) $
                     runMetaE zonked_q_expr
        ; mod_finalizers <- readTcRef modfinalizers_ref
        ; addModFinalizersWithLclEnv $ ThModFinalizers mod_finalizers
+       -- We use orig_expr here and not q_expr when tracing as a call to
+       -- unsafeTExpCoerce is added to the original expression by the
+       -- typechecker when typed quotes are type checked.
        ; traceSplice (SpliceInfo { spliceDescription = "expression"
                                  , spliceIsDecl      = False
-                                 , spliceSource      = Just expr
+                                 , spliceSource      = Just orig_expr
                                  , spliceGenerated   = ppr expr2 })
+        -- Rename and typecheck the spliced-in expression,
+        -- making sure it has type res_ty
+        -- These steps should never fail; this is a *typed* splice
+       ; (res, wcs) <-
+            captureConstraints $
+              addErrCtxt (spliceResultDoc zonked_q_expr) $ do
+                { (exp3, _fvs) <- rnLExpr expr2
+                ; tcMonoExpr exp3 (mkCheckExpType zonked_ty)}
+       ; ev <- simplifyTop wcs
+       ; return $ unLoc (mkHsDictLet (EvBinds ev) res)
+       }
 
-         -- Rename and typecheck the spliced-in expression,
-         -- making sure it has type res_ty
-         -- These steps should never fail; this is a *typed* splice
-       ; addErrCtxt (spliceResultDoc expr) $ do
-       { (exp3, _fvs) <- rnLExpr expr2
-       ; exp4 <- tcMonoExpr exp3 (mkCheckExpType res_ty)
-       ; return (unLoc exp4) } }
 
 {-
 ************************************************************************
@@ -527,7 +547,7 @@ spliceCtxtDoc splice
   = hang (text "In the Template Haskell splice")
          2 (pprSplice splice)
 
-spliceResultDoc :: LHsExpr GhcRn -> SDoc
+spliceResultDoc :: LHsExpr GhcTc -> SDoc
 spliceResultDoc expr
   = sep [ text "In the result of the splice:"
         , nest 2 (char '$' <> ppr expr)
@@ -559,7 +579,7 @@ tcTopSpliceExpr isTypedSplice tc_action
        ; const_binds     <- simplifyTop wanted
 
           -- Zonk it and tie the knot of dictionary bindings
-       ; zonkTopLExpr (mkHsDictLet (EvBinds const_binds) expr') }
+       ; return $ mkHsDictLet (EvBinds const_binds) expr' }
 
 {-
 ************************************************************************
@@ -578,7 +598,7 @@ runAnnotation target expr = do
     -- Check the instances we require live in another module (we want to execute it..)
     -- and check identifiers live in other modules using TH stage checks. tcSimplifyStagedExpr
     -- also resolves the LIE constraints to detect e.g. instance ambiguity
-    zonked_wrapped_expr' <- tcTopSpliceExpr Untyped $
+    zonked_wrapped_expr' <- zonkTopLExpr =<< tcTopSpliceExpr Untyped (
            do { (expr', expr_ty) <- tcInferRhoNC expr
                 -- We manually wrap the typechecked expression in a call to toAnnotationWrapper
                 -- By instantiating the call >here< it gets registered in the
@@ -589,7 +609,8 @@ runAnnotation target expr = do
                       = L loc (mkHsWrap wrapper
                                  (HsVar noExt (L loc to_annotation_wrapper_id)))
               ; return (L loc (HsApp noExt
-                                specialised_to_annotation_wrapper_expr expr')) }
+                                specialised_to_annotation_wrapper_expr expr'))
+                                })
 
     -- Run the appropriately wrapped expression to get the value of
     -- the annotation and its dictionaries. The return value is of
@@ -790,6 +811,58 @@ runMeta' show_code ppr_hs run_and_convert expr
         failWithTc msg
 
 {-
+Note [Running typed splices in the zonker]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+See #15471 for the full discussion.
+
+For many years typed splices were run immediately after they were type checked
+however, this is too early as it means to zonk some type variables before
+they can be unified with type variables in the surrounding context.
+
+For example,
+
+```
+module A where
+
+test_foo :: forall a . Q (TExp (a -> a))
+test_foo = [|| id ||]
+
+module B where
+
+import A
+
+qux = $$(test_foo)
+```
+
+We would expect `qux` to have inferred type `forall a . a -> a` but if
+we run the splices too early the unified variables are zonked to `Any`. The
+inferred type is the unusable `Any -> Any`.
+
+To run the splice, we must compile `test_foo` all the way to byte code.
+But at the moment when the type checker is looking at the splice, test_foo
+has type `Q (TExp (alpha -> alpha))` and we
+certainly can't compile code involving unification variables!
+
+We could default `alpha` to `Any` but then we infer `qux :: Any -> Any`
+which definitely is not what we want.  Moreover, if we had
+  qux = [$$(test_foo), (\x -> x +1::Int)]
+then `alpha` would have to be `Int`.
+
+Conclusion: we must defer taking decisions about `alpha` until the
+typechecker is done; and *then* we can run the splice.  It's fine to do it
+later, because we know it'll produce type-correct code.
+
+Deferring running the splice until later, in the zonker, means that the
+unification variables propagate upwards from the splice into the surrounding
+context and are unified correctly.
+
+This is implemented by storing the arguments we need for running the splice
+in a `DelayedSplice`. In the zonker, the arguments are passed to
+`TcSplice.runTopSplice` and the expression inserted into the AST as normal.
+
+
+
 Note [Exceptions in TH]
 ~~~~~~~~~~~~~~~~~~~~~~~
 Suppose we have something like this
@@ -1417,7 +1490,8 @@ reifyTyCon tc
   = return (TH.PrimTyConI (reifyName tc) 2                False)
 
   | isPrimTyCon tc
-  = return (TH.PrimTyConI (reifyName tc) (tyConArity tc) (isUnliftedTyCon tc))
+  = return (TH.PrimTyConI (reifyName tc) (length (tyConVisibleTyVars tc))
+                          (isUnliftedTyCon tc))
 
   | isTypeFamilyTyCon tc
   = do { let tvs      = tyConTyVars tc
@@ -1821,109 +1895,12 @@ reifyTyVarsToMaybe :: [TyVar] -> TcM (Maybe [TH.TyVarBndr])
 reifyTyVarsToMaybe []  = pure Nothing
 reifyTyVarsToMaybe tys = Just <$> reifyTyVars tys
 
-{-
-Note [Kind annotations on TyConApps]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A poly-kinded tycon sometimes needs a kind annotation to be unambiguous.
-For example:
-
-   type family F a :: k
-   type instance F Int  = (Proxy :: * -> *)
-   type instance F Bool = (Proxy :: (* -> *) -> *)
-
-It's hard to figure out where these annotations should appear, so we do this:
-Suppose we have a tycon application (T ty1 ... tyn). Assuming that T is not
-oversatured (more on this later), we can assume T's declaration is of the form
-T (tvb1 :: s1) ... (tvbn :: sn) :: p. If any kind variable that
-is free in p is not free in an injective position in tvb1 ... tvbn,
-then we put on a kind annotation, since we would not otherwise be able to infer
-the kind of the whole tycon application.
-
-The injective positions in a tyvar binder are the injective positions in the
-kind of its tyvar, provided the tyvar binder is either:
-
-* Anonymous. For example, in the promoted data constructor '(:):
-
-    '(:) :: forall a. a -> [a] -> [a]
-
-  The second and third tyvar binders (of kinds `a` and `[a]`) are both
-  anonymous, so if we had '(:) 'True '[], then the inferred kinds of 'True and
-  '[] would contribute to the inferred kind of '(:) 'True '[].
-* Has required visibility. For example, in the type family:
-
-    type family Wurble k (a :: k) :: k
-    Wurble :: forall k -> k -> k
-
-  The first tyvar binder (of kind `forall k`) has required visibility, so if
-  we had Wurble (Maybe a) Nothing, then the inferred kind of Maybe a would
-  contribute to the inferred kind of Wurble (Maybe a) Nothing.
-
-An injective position in a type is one that does not occur as an argument to
-a non-injective type constructor (e.g., non-injective type families). See
-injectiveVarsOfType.
-
-How can be sure that this is correct? That is, how can we be sure that in the
-event that we leave off a kind annotation, that one could infer the kind of the
-tycon application from its arguments? It's essentially a proof by induction: if
-we can infer the kinds of every subtree of a type, then the whole tycon
-application will have an inferrable kind--unless, of course, the remainder of
-the tycon application's kind has uninstantiated kind variables.
-
-An earlier implementation of this algorithm only checked if p contained any
-free variables. But this was unsatisfactory, since a datatype like this:
-
-  data Foo = Foo (Proxy '[False, True])
-
-Would be reified like this:
-
-  data Foo = Foo (Proxy ('(:) False ('(:) True ('[] :: [Bool])
-                                     :: [Bool]) :: [Bool]))
-
-Which has a rather excessive amount of kind annotations. With the current
-algorithm, we instead reify Foo to this:
-
-  data Foo = Foo (Proxy ('(:) False ('(:) True ('[] :: [Bool]))))
-
-Since in the case of '[], the kind p is [a], and there are no arguments in the
-kind of '[]. On the other hand, in the case of '(:) True '[], the kind p is
-(forall a. [a]), but a occurs free in the first and second arguments of the
-full kind of '(:), which is (forall a. a -> [a] -> [a]). (See Trac #14060.)
-
-What happens if T is oversaturated? That is, if T's kind has fewer than n
-arguments, in the case that the concrete application instantiates a result
-kind variable with an arrow kind? If we run out of arguments, we do not attach
-a kind annotation. This should be a rare case, indeed. Here is an example:
-
-   data T1 :: k1 -> k2 -> *
-   data T2 :: k1 -> k2 -> *
-
-   type family G (a :: k) :: k
-   type instance G T1 = T2
-
-   type instance F Char = (G T1 Bool :: (* -> *) -> *)   -- F from above
-
-Here G's kind is (forall k. k -> k), and the desugared RHS of that last
-instance of F is (G (* -> (* -> *) -> *) (T1 * (* -> *)) Bool). According to
-the algorithm above, there are 3 arguments to G so we should peel off 3
-arguments in G's kind. But G's kind has only two arguments. This is the
-rare special case, and we choose not to annotate the application of G with
-a kind signature. After all, we needn't do this, since that instance would
-be reified as:
-
-   type instance F Char = G (T1 :: * -> (* -> *) -> *) Bool
-
-So the kind of G isn't ambiguous anymore due to the explicit kind annotation
-on its argument. See #8953 and test th/T8953.
--}
-
 reify_tc_app :: TyCon -> [Type.Type] -> TcM TH.Type
 reify_tc_app tc tys
   = do { tys' <- reifyTypes (filterOutInvisibleTypes tc tys)
        ; maybe_sig_t (mkThAppTs r_tc tys') }
   where
     arity       = tyConArity tc
-    tc_binders  = tyConBinders tc
-    tc_res_kind = tyConResKind tc
 
     r_tc | isUnboxedSumTyCon tc           = TH.UnboxedSumT (arity `div` 2)
          | isUnboxedTupleTyCon tc         = TH.UnboxedTupleT (arity `div` 2)
@@ -1944,27 +1921,19 @@ reify_tc_app tc tys
          | isPromotedDataCon tc           = TH.PromotedT (reifyName tc)
          | otherwise                      = TH.ConT (reifyName tc)
 
-    -- See Note [Kind annotations on TyConApps]
+    -- See Note [When does a tycon application need an explicit kind
+    -- signature?] in TyCoRep
     maybe_sig_t th_type
-      | needs_kind_sig
+      | tyConAppNeedsKindSig
+          False -- We don't reify types using visible kind applications, so
+                -- don't count specified binders as contributing towards
+                -- injective positions in the kind of the tycon.
+          tc (length tys)
       = do { let full_kind = tcTypeKind (mkTyConApp tc tys)
            ; th_full_kind <- reifyKind full_kind
            ; return (TH.SigT th_type th_full_kind) }
       | otherwise
       = return th_type
-
-    needs_kind_sig
-      | GT <- compareLength tys tc_binders
-      = False
-      | otherwise
-      = let (dropped_binders, remaining_binders)
-              = splitAtList  tys tc_binders
-            result_kind  = mkTyConKind remaining_binders tc_res_kind
-            result_vars  = tyCoVarsOfType result_kind
-            dropped_vars = fvVarSet $
-                           mapUnionFV injectiveVarsOfBinder dropped_binders
-
-        in not (subVarSet result_vars dropped_vars)
 
 ------------------------------
 reifyName :: NamedThing n => n -> TH.Name

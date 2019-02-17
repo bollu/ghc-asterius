@@ -57,7 +57,7 @@ module HsUtils(
   -- Types
   mkHsAppTy, mkHsAppKindTy, userHsTyVarBndrs, userHsLTyVarBndrs,
   mkLHsSigType, mkLHsSigWcType, mkClassOpSigs, mkHsSigEnv,
-  nlHsAppTy, nlHsTyVar, nlHsFunTy, nlHsParTy, nlHsTyConApp,
+  nlHsAppTy, nlHsAppKindTy, nlHsTyVar, nlHsFunTy, nlHsParTy, nlHsTyConApp,
 
   -- Stmts
   mkTransformStmt, mkTransformByStmt, mkBodyStmt, mkBindStmt, mkTcBindStmt,
@@ -67,7 +67,7 @@ module HsUtils(
   unitRecStmtTc,
 
   -- Template Haskell
-  mkHsSpliceTy, mkHsSpliceE, mkHsSpliceTE, mkUntypedSplice,
+  mkUntypedSplice, mkTypedSplice,
   mkHsQuasiQuote, unqualQuasiQuote,
 
   -- Collecting binders
@@ -105,14 +105,14 @@ import TcEvidence
 import RdrName
 import Var
 import TyCoRep
-import Type   ( filterOutInvisibleTypes )
+import Type   ( tyConArgFlags )
 import TysWiredIn ( unitTy )
 import TcType
 import DataCon
 import ConLike
 import Id
 import Name
-import NameSet
+import NameSet hiding ( unitFV )
 import NameEnv
 import BasicTypes
 import SrcLoc
@@ -121,7 +121,6 @@ import Util
 import Bag
 import Outputable
 import Constants
-import TyCon
 
 import Data.Either
 import Data.Function
@@ -346,16 +345,8 @@ unqualSplice = mkRdrUnqual (mkVarOccFS (fsLit "splice"))
 mkUntypedSplice :: SpliceDecoration -> LHsExpr GhcPs -> HsSplice GhcPs
 mkUntypedSplice hasParen e = HsUntypedSplice noExt hasParen unqualSplice e
 
-mkHsSpliceE :: SpliceDecoration -> LHsExpr GhcPs -> HsExpr GhcPs
-mkHsSpliceE hasParen e = HsSpliceE noExt (mkUntypedSplice hasParen e)
-
-mkHsSpliceTE :: SpliceDecoration -> LHsExpr GhcPs -> HsExpr GhcPs
-mkHsSpliceTE hasParen e
-  = HsSpliceE noExt (HsTypedSplice noExt hasParen unqualSplice e)
-
-mkHsSpliceTy :: SpliceDecoration -> LHsExpr GhcPs -> HsType GhcPs
-mkHsSpliceTy hasParen e = HsSpliceTy noExt
-                      (HsUntypedSplice noExt hasParen unqualSplice e)
+mkTypedSplice :: SpliceDecoration -> LHsExpr GhcPs -> HsSplice GhcPs
+mkTypedSplice hasParen e = HsTypedSplice noExt hasParen unqualSplice e
 
 mkHsQuasiQuote :: RdrName -> SrcSpan -> FastString -> HsSplice GhcPs
 mkHsQuasiQuote quoter span quote
@@ -370,8 +361,7 @@ mkHsString :: String -> HsLit (GhcPass p)
 mkHsString s = HsString NoSourceText (mkFastString s)
 
 mkHsStringPrimLit :: FastString -> HsLit (GhcPass p)
-mkHsStringPrimLit fs
-  = HsStringPrim NoSourceText (fastStringToByteString fs)
+mkHsStringPrimLit fs = HsStringPrim NoSourceText (bytesFS fs)
 
 -------------
 userHsLTyVarBndrs :: SrcSpan -> [Located (IdP (GhcPass p))]
@@ -504,17 +494,16 @@ nlHsParTy :: LHsType (GhcPass p)                        -> LHsType (GhcPass p)
 
 nlHsAppTy f t = noLoc (HsAppTy noExt f (parenthesizeHsType appPrec t))
 nlHsTyVar x   = noLoc (HsTyVar noExt NotPromoted (noLoc x))
-nlHsFunTy a b = noLoc (HsFunTy noExt (parenthesizeHsType funPrec a)
-                                     (parenthesize_fun_tail b))
-  where
-    parenthesize_fun_tail (dL->L loc (HsFunTy ext ty1 ty2))
-      = cL loc (HsFunTy ext (parenthesizeHsType funPrec ty1)
-                           (parenthesize_fun_tail ty2))
-    parenthesize_fun_tail lty = lty
+nlHsFunTy a b = noLoc (HsFunTy noExt (parenthesizeHsType funPrec a) b)
 nlHsParTy t   = noLoc (HsParTy noExt t)
 
 nlHsTyConApp :: IdP (GhcPass p) -> [LHsType (GhcPass p)] -> LHsType (GhcPass p)
 nlHsTyConApp tycon tys  = foldl' nlHsAppTy (nlHsTyVar tycon) tys
+
+nlHsAppKindTy ::
+  LHsType (GhcPass p) -> LHsKind (GhcPass p) -> LHsType (GhcPass p)
+nlHsAppKindTy f k
+  = noLoc (HsAppKindTy noSrcSpan f (parenthesizeHsType appPrec k))
 
 {-
 Tuples.  All these functions are *pre-typechecker* because they lack
@@ -675,14 +664,24 @@ typeToLHsType ty
     go (LitTy (StrTyLit s))
       = noLoc $ HsTyLit NoExt (HsStrTy NoSourceText s)
     go ty@(TyConApp tc args)
-      | any isInvisibleTyConBinder (tyConBinders tc)
+      | tyConAppNeedsKindSig True tc (length args)
         -- We must produce an explicit kind signature here to make certain
         -- programs kind-check. See Note [Kind signatures in typeToLHsType].
-      = nlHsParTy $ noLoc $ HsKindSig NoExt lhs_ty (go (typeKind ty))
+      = nlHsParTy $ noLoc $ HsKindSig NoExt lhs_ty (go (tcTypeKind ty))
       | otherwise = lhs_ty
        where
-        lhs_ty = nlHsTyConApp (getRdrName tc) (map go args')
-        args'  = filterOutInvisibleTypes tc args
+        arg_flags :: [ArgFlag]
+        arg_flags = tyConArgFlags tc args
+
+        lhs_ty :: LHsType GhcPs
+        lhs_ty = foldl' (\f (arg, flag) ->
+                          let arg' = go arg in
+                          case flag of
+                            Inferred  -> f
+                            Specified -> f `nlHsAppKindTy` arg'
+                            Required  -> f `nlHsAppTy`     arg')
+                        (nlHsTyVar (getRdrName tc))
+                        (zip args arg_flags)
     go (CastTy ty _)        = go ty
     go (CoercionTy co)      = pprPanic "toLHsSigWcType" (ppr co)
 
@@ -699,48 +698,40 @@ Note [Kind signatures in typeToLHsType]
 There are types that typeToLHsType can produce which require explicit kind
 signatures in order to kind-check. Here is an example from Trac #14579:
 
-  newtype Wat (x :: Proxy (a :: Type)) = MkWat (Maybe a) deriving Eq
-  newtype Glurp a = MkGlurp (Wat ('Proxy :: Proxy a)) deriving Eq
+  -- type P :: forall {k} {t :: k}. Proxy t
+  type P = 'Proxy
+
+  -- type Wat :: forall a. Proxy a -> *
+  newtype Wat (x :: Proxy (a :: Type)) = MkWat (Maybe a)
+    deriving Eq
+
+  -- type Wat2 :: forall {a}. Proxy a -> *
+  type Wat2 = Wat
+
+  -- type Glurp :: * -> *
+  newtype Glurp a = MkGlurp (Wat2 (P :: Proxy a))
+    deriving Eq
 
 The derived Eq instance for Glurp (without any kind signatures) would be:
 
   instance Eq a => Eq (Glurp a) where
-    (==) = coerce @(Wat 'Proxy -> Wat 'Proxy -> Bool)
-                  @(Glurp a    -> Glurp a    -> Bool)
+    (==) = coerce @(Wat2 P  -> Wat2 P  -> Bool)
+                  @(Glurp a -> Glurp a -> Bool)
                   (==) :: Glurp a -> Glurp a -> Bool
 
 (Where the visible type applications use types produced by typeToLHsType.)
 
-The type 'Proxy has an underspecified kind, so we must ensure that
-typeToLHsType ascribes it with its kind: ('Proxy :: Proxy a).
+The type P (in Wat2 P) has an underspecified kind, so we must ensure that
+typeToLHsType ascribes it with its kind: Wat2 (P :: Proxy a). To accomplish
+this, whenever we see an application of a tycon to some arguments, we use
+the tyConAppNeedsKindSig function to determine if it requires an explicit kind
+signature to resolve some ambiguity. (See Note
+Note [When does a tycon application need an explicit kind signature?] for a
+more detailed explanation of how this works.)
 
-We must be careful not to produce too many kind signatures, or else
-typeToLHsType can produce noisy types like
-('Proxy :: Proxy (a :: (Type :: Type))). In pursuit of this goal, we adopt the
-following criterion for choosing when to annotate types with kinds:
-
-* If there is a tycon application with any invisible arguments, annotate
-  the tycon application with its kind.
-
-Why is this the right criterion? The problem we encountered earlier was the
-result of an invisible argument (the `a` in ('Proxy :: Proxy a)) being
-underspecified, so producing a kind signature for 'Proxy will catch this.
-If there are no invisible arguments, then there is nothing to do, so we can
-avoid polluting the result type with redundant noise.
-
-What about a more complicated tycon, such as this?
-
-  T :: forall {j} (a :: j). a -> Type
-
-Unlike in the previous 'Proxy example, annotating an application of `T` to an
-argument (e.g., annotating T ty to obtain (T ty :: Type)) will not fix
-its invisible argument `j`. But because we apply this strategy recursively,
-`j` will be fixed because the kind of `ty` will be fixed! That is to say,
-something to the effect of (T (ty :: j) :: Type) will be produced.
-
-This strategy certainly isn't foolproof, as tycons that contain type families
-in their kind might break down. But we'd likely need visible kind application
-to make those work.
+Note that we pass True to tyConAppNeedsKindSig since we are generated code with
+visible kind applications, so even specified arguments count towards injective
+positions in the kind of the tycon.
 -}
 
 {- *********************************************************************
@@ -1325,26 +1316,35 @@ that were defined "implicitly", without being explicitly written by the user.
 
 The main purpose is to find names introduced by record wildcards so that we can avoid
 warning the user when they don't use those names (#4404)
+
+Since the addition of -Wunused-record-wildcards, this function returns a pair
+of [(SrcSpan, [Name])]. Each element of the list is one set of implicit
+binders, the first component of the tuple is the document describes the possible
+fix to the problem (by removing the ..).
+
+This means there is some unfortunate coupling between this function and where it
+is used but it's only used for one specific purpose in one place so it seemed
+easier.
 -}
 
 lStmtsImplicits :: [LStmtLR GhcRn (GhcPass idR) (Located (body (GhcPass idR)))]
-                -> NameSet
+                -> [(SrcSpan, [Name])]
 lStmtsImplicits = hs_lstmts
   where
     hs_lstmts :: [LStmtLR GhcRn (GhcPass idR) (Located (body (GhcPass idR)))]
-              -> NameSet
-    hs_lstmts = foldr (\stmt rest -> unionNameSet (hs_stmt (unLoc stmt)) rest) emptyNameSet
+              -> [(SrcSpan, [Name])]
+    hs_lstmts = concatMap (hs_stmt . unLoc)
 
     hs_stmt :: StmtLR GhcRn (GhcPass idR) (Located (body (GhcPass idR)))
-            -> NameSet
+            -> [(SrcSpan, [Name])]
     hs_stmt (BindStmt _ pat _ _ _) = lPatImplicits pat
-    hs_stmt (ApplicativeStmt _ args _) = unionNameSets (map do_arg args)
+    hs_stmt (ApplicativeStmt _ args _) = concatMap do_arg args
       where do_arg (_, ApplicativeArgOne _ pat _ _) = lPatImplicits pat
             do_arg (_, ApplicativeArgMany _ stmts _ _) = hs_lstmts stmts
             do_arg (_, XApplicativeArg _) = panic "lStmtsImplicits"
     hs_stmt (LetStmt _ binds)     = hs_local_binds (unLoc binds)
-    hs_stmt (BodyStmt {})         = emptyNameSet
-    hs_stmt (LastStmt {})         = emptyNameSet
+    hs_stmt (BodyStmt {})         = []
+    hs_stmt (LastStmt {})         = []
     hs_stmt (ParStmt _ xs _ _)    = hs_lstmts [s | ParStmtBlock _ ss _ _ <- xs
                                                 , s <- ss]
     hs_stmt (TransStmt { trS_stmts = stmts }) = hs_lstmts stmts
@@ -1352,28 +1352,28 @@ lStmtsImplicits = hs_lstmts
     hs_stmt (XStmtLR {})          = panic "lStmtsImplicits"
 
     hs_local_binds (HsValBinds _ val_binds) = hsValBindsImplicits val_binds
-    hs_local_binds (HsIPBinds {})           = emptyNameSet
-    hs_local_binds (EmptyLocalBinds _)      = emptyNameSet
-    hs_local_binds (XHsLocalBindsLR _)      = emptyNameSet
+    hs_local_binds (HsIPBinds {})           = []
+    hs_local_binds (EmptyLocalBinds _)      = []
+    hs_local_binds (XHsLocalBindsLR _)      = []
 
-hsValBindsImplicits :: HsValBindsLR GhcRn (GhcPass idR) -> NameSet
+hsValBindsImplicits :: HsValBindsLR GhcRn (GhcPass idR) -> [(SrcSpan, [Name])]
 hsValBindsImplicits (XValBindsLR (NValBinds binds _))
-  = foldr (unionNameSet . lhsBindsImplicits . snd) emptyNameSet binds
+  = concatMap (lhsBindsImplicits . snd) binds
 hsValBindsImplicits (ValBinds _ binds _)
   = lhsBindsImplicits binds
 
-lhsBindsImplicits :: LHsBindsLR GhcRn idR -> NameSet
-lhsBindsImplicits = foldBag unionNameSet (lhs_bind . unLoc) emptyNameSet
+lhsBindsImplicits :: LHsBindsLR GhcRn idR -> [(SrcSpan, [Name])]
+lhsBindsImplicits = foldBag (++) (lhs_bind . unLoc) []
   where
     lhs_bind (PatBind { pat_lhs = lpat }) = lPatImplicits lpat
-    lhs_bind _ = emptyNameSet
+    lhs_bind _ = []
 
-lPatImplicits :: LPat GhcRn -> NameSet
+lPatImplicits :: LPat GhcRn -> [(SrcSpan, [Name])]
 lPatImplicits = hs_lpat
   where
     hs_lpat lpat = hs_pat (unLoc lpat)
 
-    hs_lpats = foldr (\pat rest -> hs_lpat pat `unionNameSet` rest) emptyNameSet
+    hs_lpats = foldr (\pat rest -> hs_lpat pat ++ rest) []
 
     hs_pat (LazyPat _ pat)      = hs_lpat pat
     hs_pat (BangPat _ pat)      = hs_lpat pat
@@ -1386,16 +1386,26 @@ lPatImplicits = hs_lpat
     hs_pat (SigPat _ pat _)     = hs_lpat pat
     hs_pat (CoPat _ _ pat _)    = hs_pat pat
 
-    hs_pat (ConPatIn _ ps)           = details ps
-    hs_pat (ConPatOut {pat_args=ps}) = details ps
+    hs_pat (ConPatIn n ps)           = details n ps
+    hs_pat (ConPatOut {pat_con=con, pat_args=ps}) = details (fmap conLikeName con) ps
 
-    hs_pat _ = emptyNameSet
+    hs_pat _ = []
 
-    details (PrefixCon ps)   = hs_lpats ps
-    details (RecCon fs)      = hs_lpats explicit `unionNameSet` mkNameSet (collectPatsBinders implicit)
-      where (explicit, implicit) = partitionEithers [if pat_explicit then Left pat else Right pat
+    details :: Located Name -> HsConPatDetails GhcRn -> [(SrcSpan, [Name])]
+    details _ (PrefixCon ps)   = hs_lpats ps
+    details n (RecCon fs)      =
+      [(err_loc, collectPatsBinders implicit_pats) | Just{} <- [rec_dotdot fs] ]
+        ++ hs_lpats explicit_pats
+
+      where implicit_pats = map (hsRecFieldArg . unLoc) implicit
+            explicit_pats = map (hsRecFieldArg . unLoc) explicit
+
+
+            (explicit, implicit) = partitionEithers [if pat_explicit then Left fld else Right fld
                                                     | (i, fld) <- [0..] `zip` rec_flds fs
-                                                    , let pat = hsRecFieldArg
-                                                                     (unLoc fld)
-                                                          pat_explicit = maybe True (i<) (rec_dotdot fs)]
-    details (InfixCon p1 p2) = hs_lpat p1 `unionNameSet` hs_lpat p2
+                                                    ,  let  pat_explicit =
+                                                              maybe True ((i<) . unLoc)
+                                                                         (rec_dotdot fs)]
+            err_loc = maybe (getLoc n) getLoc (rec_dotdot fs)
+
+    details _ (InfixCon p1 p2) = hs_lpat p1 ++ hs_lpat p2

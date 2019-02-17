@@ -11,8 +11,8 @@
 
 module InteractiveEval (
         Resume(..), History(..),
-        execStmt, ExecOptions(..), execOptions, ExecResult(..), resumeExec,
-        runDecls, runDeclsWithLocation,
+        execStmt, execStmt', ExecOptions(..), execOptions, ExecResult(..), resumeExec,
+        runDecls, runDeclsWithLocation, runParsedDecls,
         isStmt, hasImport, isImport, isDecl,
         parseImportDecl, SingleStep(..),
         abandon, abandonAll,
@@ -60,7 +60,7 @@ import CoreFVs    ( orphNamesOfFamInst )
 import TyCon
 import Type             hiding( typeKind )
 import RepType
-import TcType           hiding( typeKind )
+import TcType
 import Var
 import Id
 import Name             hiding ( varName )
@@ -165,23 +165,40 @@ execStmt
   => String             -- ^ a statement (bind or expression)
   -> ExecOptions
   -> m ExecResult
-execStmt stmt ExecOptions{..} = do
+execStmt input exec_opts@ExecOptions{..} = do
+    hsc_env <- getSession
+
+    mb_stmt <-
+      liftIO $
+      runInteractiveHsc hsc_env $
+      hscParseStmtWithLocation execSourceFile execLineNumber input
+
+    case mb_stmt of
+      -- empty statement / comment
+      Nothing -> return (ExecComplete (Right []) 0)
+      Just stmt -> execStmt' stmt input exec_opts
+
+-- | Like `execStmt`, but takes a parsed statement as argument. Useful when
+-- doing preprocessing on the AST before execution, e.g. in GHCi (see
+-- GHCi.UI.runStmt).
+execStmt' :: GhcMonad m => GhciLStmt GhcPs -> String -> ExecOptions -> m ExecResult
+execStmt' stmt stmt_text ExecOptions{..} = do
     hsc_env <- getSession
 
     -- Turn off -fwarn-unused-local-binds when running a statement, to hide
     -- warnings about the implicit bindings we introduce.
+    -- (This is basically `mkInteractiveHscEnv hsc_env`, except we unset
+    -- -wwarn-unused-local-binds)
     let ic       = hsc_IC hsc_env -- use the interactive dflags
         idflags' = ic_dflags ic `wopt_unset` Opt_WarnUnusedLocalBinds
-        hsc_env' = hsc_env{ hsc_IC = ic{ ic_dflags = idflags' } }
+        hsc_env' = mkInteractiveHscEnv (hsc_env{ hsc_IC = ic{ ic_dflags = idflags' } })
 
-    -- compile to value (IO [HValue]), don't run
-    r <- liftIO $ hscStmtWithLocation hsc_env' stmt
-                    execSourceFile execLineNumber
+    r <- liftIO $ hscParsedStmt hsc_env' stmt
 
     case r of
-      -- empty statement / comment
-      Nothing -> return (ExecComplete (Right []) 0)
-
+      Nothing ->
+        -- empty statement / comment
+        return (ExecComplete (Right []) 0)
       Just (ids, hval, fix_env) -> do
         updateFixityEnv fix_env
 
@@ -195,9 +212,8 @@ execStmt stmt ExecOptions{..} = do
 
             size = ghciHistSize idflags'
 
-        handleRunStatus execSingleStep stmt bindings ids
+        handleRunStatus execSingleStep stmt_text bindings ids
                         status (emptyHistory size)
-
 
 runDecls :: GhcMonad m => String -> m [Name]
 runDecls = runDeclsWithLocation "<interactive>" 1
@@ -205,10 +221,18 @@ runDecls = runDeclsWithLocation "<interactive>" 1
 -- | Run some declarations and return any user-visible names that were brought
 -- into scope.
 runDeclsWithLocation :: GhcMonad m => String -> Int -> String -> m [Name]
-runDeclsWithLocation source linenumber expr =
-  do
+runDeclsWithLocation source line_num input = do
     hsc_env <- getSession
-    (tyThings, ic) <- liftIO $ hscDeclsWithLocation hsc_env expr source linenumber
+    decls <- liftIO (hscParseDeclsWithLocation hsc_env source line_num input)
+    runParsedDecls decls
+
+-- | Like `runDeclsWithLocation`, but takes parsed declarations as argument.
+-- Useful when doing preprocessing on the AST before execution, e.g. in GHCi
+-- (see GHCi.UI.runStmt).
+runParsedDecls :: GhcMonad m => [LHsDecl GhcPs] -> m [Name]
+runParsedDecls decls = do
+    hsc_env <- getSession
+    (tyThings, ic) <- liftIO (hscParsedDecls hsc_env decls)
 
     setSession $ hsc_env { hsc_IC = ic }
     hsc_env <- getSession
@@ -222,7 +246,7 @@ runDeclsWithLocation source linenumber expr =
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 We don't want to display internally-generated bindings to users.
 Things like the coercion axiom for newtypes. These bindings all get
-OccNames that users can't write, to avoid the possiblity of name
+OccNames that users can't write, to avoid the possibility of name
 clashes (in linker symbols).  That gives a convenient way to suppress
 them. The relevant predicate is OccName.isDerivedOccName.
 See Trac #11051 for more background and examples.

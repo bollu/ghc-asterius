@@ -41,9 +41,13 @@ Language
   terminating value of type ``Void``. Accordingly, GHC will not warn about
   ``K2`` (whereas previous versions of GHC would).
 
-- ``(!)`` is now a valid type operator: ::
+- ``(!)`` and ``(.)`` are now valid type operators: ::
 
       type family a ! b
+      type family a . b
+
+- ``forall`` is now always a keyword in types to provide more helpful
+  error messages when ``-XExplicitForall`` is off.
 
 - An existential context no longer requires parenthesization: ::
 
@@ -84,6 +88,10 @@ Compiler
 
 - The deprecated ghc-flag ``-Wamp`` has been removed.
 
+- Add new :ghc-flag:`-Wmissing-deriving-strategies` flag that warns users when they are not
+  taking advantage of :extension:`DerivingStrategies`. The warning is supplied at each
+  ``deriving`` site.
+
 Runtime system
 ~~~~~~~~~~~~~~
 
@@ -106,6 +114,10 @@ Runtime system
 - Add support for generating a new type of output: extended interfaces files.
   Generation of these files, which sport a ``.hie`` suffix, is enabled via the
   ``-fwrite-ide-info`` flag. See :ref:`hie-options` for more information.
+
+- A new flag ``-xp`` is added on x86_64. When it is passed, the runtime linker
+  can load object files compiled with ``-fPIC -fexternal-dynamic-refs``
+  anywhere in the address space. This used to be restricted to the low 2Gb.
 
 Template Haskell
 ~~~~~~~~~~~~~~~~

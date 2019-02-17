@@ -71,6 +71,10 @@ module   RdrHsSyn (
         mkImpExpSubSpec,
         checkImportSpec,
 
+        -- Token symbols
+        forallSym,
+        starSym,
+
         -- Warnings and errors
         warnStarIsType,
         failOpFewArgs,
@@ -97,7 +101,7 @@ import TysWiredIn       ( cTupleTyConName, tupleTyCon, tupleDataCon,
                           listTyConName, listTyConKey, eqTyCon_RDR,
                           tupleTyConName, cTupleTyConNameArity_maybe )
 import ForeignCall
-import PrelNames        ( forall_tv_RDR, allNameStrings )
+import PrelNames        ( allNameStrings )
 import SrcLoc
 import Unique           ( hasKey )
 import OrdList          ( OrdList, fromOL )
@@ -108,7 +112,6 @@ import Maybes
 import Util
 import ApiAnnotation
 import Data.List
-import qualified GHC.LanguageExtensions as LangExt
 import DynFlags ( WarningFlag(..) )
 
 import Control.Monad
@@ -152,10 +155,11 @@ mkClassDecl loc (dL->L _ (mcxt, tycl_hdr)) fds where_cls
   = do { (binds, sigs, ats, at_insts, _, docs) <- cvBindsAndSigs where_cls
        ; let cxt = fromMaybe (noLoc []) mcxt
        ; (cls, tparams, fixity, ann) <- checkTyClHdr True tycl_hdr
-       ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (text "class") whereDots cls tparams
-       ; (at_defs, anns) <- fmap unzip $ mapM (eitherToP . mkATDefault) at_insts
-       ; sequence_ anns
+       ; addAnnsAt loc ann -- Add any API Annotations to the top SrcSpan
+       ; (tyvars,annst) <- checkTyVarsP (text "class") whereDots cls tparams
+       ; addAnnsAt loc annst -- Add any API Annotations to the top SrcSpan
+       ; (at_defs, annsi) <- mapAndUnzipM (eitherToP . mkATDefault) at_insts
+       ; sequence_ annsi
        ; return (cL loc (ClassDecl { tcdCExt = noExt, tcdCtxt = cxt
                                    , tcdLName = cls, tcdTyVars = tyvars
                                    , tcdFixity = fixity
@@ -187,7 +191,7 @@ mkATDefault (dL->L loc (TyFamInstDecl { tfid_eqn = HsIB { hsib_body = e }}))
                                     , feqn_pats   = tvs
                                     , feqn_fixity = fixity
                                     , feqn_rhs    = rhs })
-           ; pure (f, anns) }
+           ; pure (f, addAnnsAt loc anns) }
 mkATDefault (dL->L _ (TyFamInstDecl (HsIB _ (XFamEqn _)))) = panic "mkATDefault"
 mkATDefault (dL->L _ (TyFamInstDecl (XHsImplicitBndrs _))) = panic "mkATDefault"
 mkATDefault _ = panic "mkATDefault: Impossible Match"
@@ -204,8 +208,9 @@ mkTyData :: SrcSpan
 mkTyData loc new_or_data cType (dL->L _ (mcxt, tycl_hdr))
          ksig data_cons maybe_deriv
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False tycl_hdr
-       ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (ppr new_or_data) equalsDots tc tparams
+       ; addAnnsAt loc ann -- Add any API Annotations to the top SrcSpan
+       ; (tyvars, anns) <- checkTyVarsP (ppr new_or_data) equalsDots tc tparams
+       ; addAnnsAt loc anns -- Add any API Annotations to the top SrcSpan
        ; defn <- mkDataDefn new_or_data cType mcxt ksig data_cons maybe_deriv
        ; return (cL loc (DataDecl { tcdDExt = noExt,
                                     tcdLName = tc, tcdTyVars = tyvars,
@@ -236,8 +241,9 @@ mkTySynonym :: SrcSpan
             -> P (LTyClDecl GhcPs)
 mkTySynonym loc lhs rhs
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False lhs
-       ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (text "type") equalsDots tc tparams
+       ; addAnnsAt loc ann -- Add any API Annotations to the top SrcSpan
+       ; (tyvars, anns) <- checkTyVarsP (text "type") equalsDots tc tparams
+       ; addAnnsAt loc anns -- Add any API Annotations to the top SrcSpan
        ; return (cL loc (SynDecl { tcdSExt = noExt
                                  , tcdLName = tc, tcdTyVars = tyvars
                                  , tcdFixity = fixity
@@ -261,13 +267,13 @@ mkTyFamInstEqn bndrs lhs rhs
 mkDataFamInst :: SrcSpan
               -> NewOrData
               -> Maybe (Located CType)
-              -> Located ( Maybe (LHsContext GhcPs), Maybe [LHsTyVarBndr GhcPs]
-                         , LHsType GhcPs)
+              -> (Maybe ( LHsContext GhcPs), Maybe [LHsTyVarBndr GhcPs]
+                        , LHsType GhcPs)
               -> Maybe (LHsKind GhcPs)
               -> [LConDecl GhcPs]
               -> HsDeriving GhcPs
               -> P (LInstDecl GhcPs)
-mkDataFamInst loc new_or_data cType (dL->L _ (mcxt, bndrs, tycl_hdr))
+mkDataFamInst loc new_or_data cType (mcxt, bndrs, tycl_hdr)
               ksig data_cons maybe_deriv
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False tycl_hdr
        ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
@@ -294,8 +300,9 @@ mkFamDecl :: SrcSpan
           -> P (LTyClDecl GhcPs)
 mkFamDecl loc info lhs ksig injAnn
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False lhs
-       ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (ppr info) equals_or_where tc tparams
+       ; addAnnsAt loc ann -- Add any API Annotations to the top SrcSpan
+       ; (tyvars, anns) <- checkTyVarsP (ppr info) equals_or_where tc tparams
+       ; addAnnsAt loc anns -- Add any API Annotations to the top SrcSpan
        ; return (cL loc (FamDecl noExt (FamilyDecl
                                            { fdExt       = noExt
                                            , fdInfo      = info, fdLName = tc
@@ -572,14 +579,10 @@ tyConToDataCon loc tc
   = return (cL loc (setRdrNameSpace tc srcDataName))
 
   | otherwise
-  = Left (loc, msg $$ extra)
+  = Left (loc, msg)
   where
     occ = rdrNameOcc tc
-
     msg = text "Not a data constructor:" <+> quotes (ppr tc)
-    extra | tc == forall_tv_RDR
-          = text "Perhaps you intended to use ExistentialQuantification"
-          | otherwise = empty
 
 mkPatSynMatchGroup :: Located RdrName
                    -> Located (OrdList (LHsDecl GhcPs))
@@ -805,13 +808,11 @@ really doesn't matter!
 -}
 
 checkTyVarsP :: SDoc -> SDoc -> Located RdrName -> [LHsTypeArg GhcPs]
-             -> P (LHsQTyVars GhcPs)
+             -> P (LHsQTyVars GhcPs, [AddAnn])
 -- Same as checkTyVars, but in the P monad
 checkTyVarsP pp_what equals_or_where tc tparms
   = do { let checkedTvs = checkTyVars pp_what equals_or_where tc tparms
-       ; (tvs, anns) <- eitherToP checkedTvs
-       ; anns
-       ; pure tvs }
+       ; eitherToP checkedTvs }
 
 eitherToP :: Either (SrcSpan, SDoc) a -> P a
 -- Adapts the Either monad to the P monad
@@ -821,16 +822,17 @@ eitherToP (Right thing)     = return thing
 checkTyVars :: SDoc -> SDoc -> Located RdrName -> [LHsTypeArg GhcPs]
             -> Either (SrcSpan, SDoc)
                       ( LHsQTyVars GhcPs  -- the synthesized type variables
-                      , P () )            -- action which adds annotations
+                      , [AddAnn] )        -- action which adds annotations
 -- ^ Check whether the given list of type parameters are all type variables
 -- (possibly with a kind signature).
 -- We use the Either monad because it's also called (via 'mkATDefault') from
 -- "Convert".
 checkTyVars pp_what equals_or_where tc tparms
   = do { (tvs, anns) <- fmap unzip $ mapM check tparms
-       ; return (mkHsQTvs tvs, sequence_ anns) }
+       ; return (mkHsQTvs tvs, concat anns) }
   where
-    check (HsTypeArg ki@(L loc _)) = Left (loc,
+    check (HsTypeArg _ ki@(L loc _))
+                              = Left (loc,
                                       vcat [ text "Unexpected type application" <+>
                                             text "@" <> ppr ki
                                           , text "In the" <+> pp_what <+>
@@ -840,14 +842,15 @@ checkTyVars pp_what equals_or_where tc tparms
                            <+> text "declaration for" <+> quotes (ppr tc)])
         -- Keep around an action for adjusting the annotations of extra parens
     chkParens :: [AddAnn] -> LHsType GhcPs
-              -> Either (SrcSpan, SDoc) (LHsTyVarBndr GhcPs, P ())
+              -> Either (SrcSpan, SDoc) (LHsTyVarBndr GhcPs, [AddAnn])
     chkParens acc (dL->L l (HsParTy _ ty)) = chkParens (mkParensApiAnn l
                                                         ++ acc) ty
     chkParens acc ty = case chk ty of
       Left err -> Left err
-      Right tv@(dL->L l _) -> Right (tv, addAnnsAt l (reverse acc))
+      Right tv -> Right (tv, reverse acc)
 
         -- Check that the name space is correct!
+    chk :: LHsType GhcPs -> Either (SrcSpan, SDoc) (LHsTyVarBndr GhcPs)
     chk (dL->L l (HsKindSig _ (dL->L lv (HsTyVar _ _ (dL->L _ tv))) k))
         | isRdrTyVar tv    = return (cL l (KindedTyVar noExt (cL lv tv) k))
     chk (dL->L l (HsTyVar _ _ (dL->L ltv tv)))
@@ -880,9 +883,9 @@ equalsDots = text "= ..."
 checkDatatypeContext :: Maybe (LHsContext GhcPs) -> P ()
 checkDatatypeContext Nothing = return ()
 checkDatatypeContext (Just c)
-    = do allowed <- extension datatypeContextsEnabled
+    = do allowed <- getBit DatatypeContextsBit
          unless allowed $
-             parseErrorSDoc (getLoc c)
+             addError (getLoc c)
                  (text "Illegal datatype context (use DatatypeContexts):"
                   <+> pprLHsContext c)
 
@@ -918,26 +921,23 @@ checkRuleTyVarBndrNames = mapM_ (check . fmap hsTyVarName)
 
 checkRecordSyntax :: Outputable a => Located a -> P (Located a)
 checkRecordSyntax lr@(dL->L loc r)
-    = do allowed <- extension traditionalRecordSyntaxEnabled
-         if allowed
-             then return lr
-             else parseErrorSDoc loc
-                   (text "Illegal record syntax (use TraditionalRecordSyntax):"
-                    <+> ppr r)
+    = do allowed <- getBit TraditionalRecordSyntaxBit
+         unless allowed $ addError loc $
+           text "Illegal record syntax (use TraditionalRecordSyntax):" <+> ppr r
+         return lr
 
 -- | Check if the gadt_constrlist is empty. Only raise parse error for
 -- `data T where` to avoid affecting existing error message, see #8258.
 checkEmptyGADTs :: Located ([AddAnn], [LConDecl GhcPs])
                 -> P (Located ([AddAnn], [LConDecl GhcPs]))
 checkEmptyGADTs gadts@(dL->L span (_, []))           -- Empty GADT declaration.
-    = do opts <- fmap options getPState
-         if LangExt.GADTSyntax `extopt` opts         -- GADTs implies GADTSyntax
-            then return gadts
-            else parseErrorSDoc span $ vcat
-              [ text "Illegal keyword 'where' in data declaration"
-              , text "Perhaps you intended to use GADTs or a similar language"
-              , text "extension to enable syntax: data T where"
-              ]
+    = do gadtSyntax <- getBit GadtSyntaxBit   -- GADTs implies GADTSyntax
+         unless gadtSyntax $ addError span $ vcat
+           [ text "Illegal keyword 'where' in data declaration"
+           , text "Perhaps you intended to use GADTs or a similar language"
+           , text "extension to enable syntax: data T where"
+           ]
+         return gadts
 checkEmptyGADTs gadts = return gadts              -- Ordinary GADT declaration.
 
 checkTyClHdr :: Bool               -- True  <=> class header
@@ -957,10 +957,10 @@ checkTyClHdr is_cls ty
     goL (dL->L l ty) acc ann fix = go l ty acc ann fix
 
     -- workaround to define '*' despite StarIsType
-    go _ (HsParTy _ (dL->L l (HsStarTy _ isUni))) acc ann fix
+    go lp (HsParTy _ (dL->L l (HsStarTy _ isUni))) acc ann fix
       = do { warnStarBndr l
-           ; let name = mkOccName tcClsName (if isUni then "★" else "*")
-           ; return (cL l (Unqual name), acc, fix, ann) }
+           ; let name = mkOccName tcClsName (starSym isUni)
+           ; return (cL l (Unqual name), acc, fix, (ann ++ mkParensApiAnn lp)) }
 
     go l (HsTyVar _ _ (dL->L _ tc)) acc ann fix
       | isRdrTc tc               = return (cL l tc, acc, fix, ann)
@@ -968,7 +968,7 @@ checkTyClHdr is_cls ty
       | isRdrTc tc               = return (ltc, HsValArg t1:HsValArg t2:acc, Infix, ann)
     go l (HsParTy _ ty)    acc ann fix = goL ty acc (ann ++mkParensApiAnn l) fix
     go _ (HsAppTy _ t1 t2) acc ann fix = goL t1 (HsValArg t2:acc) ann fix
-    go _ (HsAppKindTy _ ty ki) acc ann fix = goL ty (HsTypeArg ki:acc) ann fix
+    go _ (HsAppKindTy l ty ki) acc ann fix = goL ty (HsTypeArg l ki:acc) ann fix
     go l (HsTupleTy _ HsBoxedOrConstraintTuple ts) [] ann fix
       = return (cL l (nameRdrName tup_name), map HsValArg ts, fix, ann)
       where
@@ -995,9 +995,9 @@ checkBlockArguments expr = case unLoc expr of
     _ -> return ()
   where
     check element = do
-      pState <- getPState
-      unless (extopt LangExt.BlockArguments (options pState)) $
-        parseErrorSDoc (getLoc expr) $
+      blockArguments <- getBit BlockArgumentsBit
+      unless blockArguments $
+        addError (getLoc expr) $
           text "Unexpected " <> text element <> text " in function application:"
            $$ nest 4 (ppr expr)
            $$ text "You could write it with parentheses"
@@ -1039,7 +1039,7 @@ checkNoDocs msg ty = go ty
   where
     go (dL->L _ (HsAppKindTy _ ty ki)) = go ty *> go ki
     go (dL->L _ (HsAppTy _ t1 t2)) = go t1 *> go t2
-    go (dL->L l (HsDocTy _ t ds)) = parseErrorSDoc l $ hsep
+    go (dL->L l (HsDocTy _ t ds)) = addError l $ hsep
                                   [ text "Unexpected haddock", quotes (ppr ds)
                                   , text "on", msg, quotes (ppr t) ]
     go _ = pure ()
@@ -1082,8 +1082,7 @@ checkPat msg loc e _
 
 checkAPat :: SDoc -> SrcSpan -> HsExpr GhcPs -> P (Pat GhcPs)
 checkAPat msg loc e0 = do
- pState <- getPState
- let opts = options pState
+ nPlusKPatterns <- getBit NPlusKPatternsBit
  case e0 of
    EWildPat _ -> return (WildPat noExt)
    HsVar _ x  -> return (VarPat noExt x)
@@ -1119,7 +1118,7 @@ checkAPat msg loc e0 = do
    OpApp _ (dL->L nloc (HsVar _ (dL->L _ n)))
            (dL->L _    (HsVar _ (dL->L _ plus)))
            (dL->L lloc (HsOverLit _ lit@(OverLit {ol_val = HsIntegral {}})))
-                      | extopt LangExt.NPlusKPatterns opts && (plus == plus_RDR)
+                      | nPlusKPatterns && (plus == plus_RDR)
                       -> return (mkNPlusKPat (cL nloc n) (cL lloc lit))
    OpApp _ l (dL->L cl (HsVar _ (dL->L _ c))) r
      | isDataOcc (rdrNameOcc c) -> do
@@ -1285,9 +1284,9 @@ checkDoAndIfThenElse :: LHsExpr GhcPs
                      -> P ()
 checkDoAndIfThenElse guardExpr semiThen thenExpr semiElse elseExpr
  | semiThen || semiElse
-    = do pState <- getPState
-         unless (extopt LangExt.DoAndIfThenElse (options pState)) $ do
-             parseErrorSDoc (combineLocs guardExpr elseExpr)
+    = do doAndIfThenElse <- getBit DoAndIfThenElseBit
+         unless doAndIfThenElse $ do
+             addError (combineLocs guardExpr elseExpr)
                             (text "Unexpected semi-colons in conditional:"
                           $$ nest 4 expr
                           $$ text "Perhaps you meant to use DoAndIfThenElse?")
@@ -1356,7 +1355,7 @@ isFunLhs e = go e [] []
 
    go e@(L loc (OpApp _ l (dL->L loc' (HsVar _ (dL->L _ op))) r)) es ann
         | Just (e',es') <- splitBang e
-        = do { bang_on <- extension bangPatEnabled
+        = do { bang_on <- getBit BangPatBit
              ; if bang_on then go e' (es' ++ es) ann
                else return (Just (cL loc' op, Infix, (l:r:es), ann)) }
                 -- No bangs; behave just like the next case
@@ -1376,9 +1375,25 @@ isFunLhs e = go e [] []
 -- | Either an operator or an operand.
 data TyEl = TyElOpr RdrName | TyElOpd (HsType GhcPs)
           | TyElKindApp SrcSpan (LHsType GhcPs)
+          -- See Note [TyElKindApp SrcSpan interpretation]
           | TyElTilde | TyElBang
           | TyElUnpackedness ([AddAnn], SourceText, SrcUnpackedness)
           | TyElDocPrev HsDocString
+
+
+{- Note [TyElKindApp SrcSpan interpretation]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A TyElKindApp captures type application written in haskell as
+
+    @ Foo
+
+where Foo is some type.
+
+The SrcSpan reflects both elements, and there are AnnAt and AnnVal API
+Annotations attached to this SrcSpan for the specific locations of
+each within it.
+-}
 
 instance Outputable TyEl where
   ppr (TyElOpr name) = ppr name
@@ -1460,12 +1475,11 @@ mergeOps all_xs = go (0 :: Int) [] id all_xs
     -- handle (NO)UNPACK pragmas
     go k acc ops_acc ((dL->L l (TyElUnpackedness (anns, unpkSrc, unpk))):xs) =
       if not (null acc) && null xs
-      then do { (addAccAnns, acc') <- eitherToP $ mergeOpsAcc acc
+      then do { acc' <- eitherToP $ mergeOpsAcc acc
               ; let a = ops_acc acc'
                     strictMark = HsSrcBang unpkSrc unpk NoSrcStrict
                     bl = combineSrcSpans l (getLoc a)
                     bt = HsBangTy noExt strictMark a
-              ; addAccAnns
               ; addAnnsAt bl anns
               ; return (cL bl bt) }
       else parseErrorSDoc l unpkError
@@ -1501,8 +1515,7 @@ mergeOps all_xs = go (0 :: Int) [] id all_xs
                       -- due to #15884
         in guess xs
       = if not (null acc) && (k > 1 || length acc > 1)
-        then do { (_, a) <- eitherToP (mergeOpsAcc acc)
-               -- no need to add annotations since it fails anyways!
+        then do { a <- eitherToP (mergeOpsAcc acc)
                 ; failOpStrictnessCompound (cL l str) (ops_acc a) }
         else failOpStrictnessPosition (cL l str)
 
@@ -1513,8 +1526,7 @@ mergeOps all_xs = go (0 :: Int) [] id all_xs
     go k acc ops_acc ((dL->L l (TyElOpr op)):xs) =
       if null acc || null (filter isTyElOpd xs)
         then failOpFewArgs (cL l op)
-        else do { (addAccAnns, acc') <- eitherToP (mergeOpsAcc acc)
-                ; addAccAnns
+        else do { acc' <- eitherToP (mergeOpsAcc acc)
                 ; go (k + 1) [] (\c -> mkLHsOpTy c (cL l op) (ops_acc acc')) xs }
       where
         isTyElOpd (dL->L _ (TyElOpd _)) = True
@@ -1536,33 +1548,32 @@ mergeOps all_xs = go (0 :: Int) [] id all_xs
 
     -- clause [tyapp]:
     -- whenever a type application is encountered, it is added to the accumulator
-    go k acc ops_acc ((dL->L _ (TyElKindApp l a)):xs) = go k (HsTypeArg (l, a):acc) ops_acc xs
+    go k acc ops_acc ((dL->L _ (TyElKindApp l a)):xs) = go k (HsTypeArg l a:acc) ops_acc xs
 
     -- clause [end]
     -- See Note [Non-empty 'acc' in mergeOps clause [end]]
-    go _ acc ops_acc [] = do { (addAccAnns, acc') <- eitherToP (mergeOpsAcc acc)
-                             ; addAccAnns
+    go _ acc ops_acc [] = do { acc' <- eitherToP (mergeOpsAcc acc)
                              ; return (ops_acc acc') }
 
     go _ _ _ _ = panic "mergeOps.go: Impossible Match"
                         -- due to #15884
 
-mergeOpsAcc :: [HsArg (LHsType GhcPs) (SrcSpan, LHsKind GhcPs)]
-         -> Either (SrcSpan, SDoc) (P (), LHsType GhcPs)
+mergeOpsAcc :: [HsArg (LHsType GhcPs) (LHsKind GhcPs)]
+         -> Either (SrcSpan, SDoc) (LHsType GhcPs)
 mergeOpsAcc [] = panic "mergeOpsAcc: empty input"
-mergeOpsAcc (HsTypeArg (_, L loc ki):_)
+mergeOpsAcc (HsTypeArg _ (L loc ki):_)
   = Left (loc, text "Unexpected type application:" <+> ppr ki)
-mergeOpsAcc (HsValArg ty : xs) = go1 (pure ()) ty xs
+mergeOpsAcc (HsValArg ty : xs) = go1 ty xs
   where
-    go1 :: P () -> LHsType GhcPs
-        -> [HsArg (LHsType GhcPs) (SrcSpan, LHsKind GhcPs)]
-        -> Either (SrcSpan, SDoc) (P (), LHsType GhcPs)
-    go1 anns lhs []     = Right (anns, lhs)
-    go1 anns lhs (x:xs) = case x of
-        HsValArg ty -> go1 anns (mkHsAppTy lhs ty) xs
-        HsTypeArg (loc, ki) -> let ty = mkHsAppKindTy lhs ki
-                               in go1 (addAnnotation (getLoc ty) AnnAt loc >> anns) ty xs
-        HsArgPar _ -> go1 anns lhs xs
+    go1 :: LHsType GhcPs
+        -> [HsArg (LHsType GhcPs) (LHsKind GhcPs)]
+        -> Either (SrcSpan, SDoc) (LHsType GhcPs)
+    go1 lhs []     = Right lhs
+    go1 lhs (x:xs) = case x of
+        HsValArg ty -> go1 (mkHsAppTy lhs ty) xs
+        HsTypeArg loc ki -> let ty = mkHsAppKindTy loc lhs ki
+                            in go1 ty xs
+        HsArgPar _ -> go1 lhs xs
 mergeOpsAcc (HsArgPar _: xs) = mergeOpsAcc xs
 
 {- Note [Impossible case in mergeOps clause [unpk]]
@@ -1625,19 +1636,19 @@ pInfixSide (el:xs1)
   | Just t1 <- pLHsTypeArg el
   = go [t1] xs1
    where
-     go :: [HsArg (LHsType GhcPs) (SrcSpan, LHsKind GhcPs)]
+     go :: [HsArg (LHsType GhcPs) (LHsKind GhcPs)]
         -> [Located TyEl] -> Maybe (LHsType GhcPs, P (), [Located TyEl])
      go acc (el:xs)
        | Just t <- pLHsTypeArg el
        = go (t:acc) xs
      go acc xs = case mergeOpsAcc acc of
        Left _ -> Nothing
-       Right (addAnns, acc') -> Just (acc', addAnns, xs)
+       Right acc' -> Just (acc', pure (), xs)
 pInfixSide _ = Nothing
 
-pLHsTypeArg :: Located TyEl -> Maybe (HsArg (LHsType GhcPs) (SrcSpan, LHsKind GhcPs))
+pLHsTypeArg :: Located TyEl -> Maybe (HsArg (LHsType GhcPs) (LHsKind GhcPs))
 pLHsTypeArg (dL->L l (TyElOpd a)) = Just (HsValArg (L l a))
-pLHsTypeArg (dL->L _ (TyElKindApp l a)) = Just (HsTypeArg (l,a))
+pLHsTypeArg (dL->L _ (TyElKindApp l a)) = Just (HsTypeArg l a)
 pLHsTypeArg _ = Nothing
 
 pDocPrev :: [Located TyEl] -> (Maybe LHsDocString, [Located TyEl])
@@ -1837,15 +1848,15 @@ mergeDataCon all_xs =
       nest 2 (hsep . reverse $ map ppr all_xs')
 
 ---------------------------------------------------------------------------
--- Check for monad comprehensions
+-- | Check for monad comprehensions
 --
--- If the flag MonadComprehensions is set, return a `MonadComp' context,
--- otherwise use the usual `ListComp' context
+-- If the flag MonadComprehensions is set, return a 'MonadComp' context,
+-- otherwise use the usual 'ListComp' context
 
 checkMonadComp :: P (HsStmtContext Name)
 checkMonadComp = do
-    pState <- getPState
-    return $ if extopt LangExt.MonadComprehensions (options pState)
+    monadComprehensions <- getBit MonadComprehensionsBit
+    return $ if monadComprehensions
                 then MonadComp
                 else ListComp
 
@@ -1965,14 +1976,14 @@ checkPrecP (dL->L l (_,i)) (dL->L _ ol)
 mkRecConstrOrUpdate
         :: LHsExpr GhcPs
         -> SrcSpan
-        -> ([LHsRecField GhcPs (LHsExpr GhcPs)], Bool)
+        -> ([LHsRecField GhcPs (LHsExpr GhcPs)], Maybe SrcSpan)
         -> P (HsExpr GhcPs)
 
 mkRecConstrOrUpdate (dL->L l (HsVar _ (dL->L _ c))) _ (fs,dd)
   | isRdrDataCon c
   = return (mkRdrRecordCon (cL l c) (mk_rec_fields fs dd))
-mkRecConstrOrUpdate exp@(dL->L l _) _ (fs,dd)
-  | dd        = parseErrorSDoc l (text "You cannot use `..' in a record update")
+mkRecConstrOrUpdate exp _ (fs,dd)
+  | Just dd_loc <- dd = parseErrorSDoc dd_loc (text "You cannot use `..' in a record update")
   | otherwise = return (mkRdrRecordUpd exp (map (fmap mk_rec_upd_field) fs))
 
 mkRdrRecordUpd :: LHsExpr GhcPs -> [LHsRecUpdField GhcPs] -> HsExpr GhcPs
@@ -1985,10 +1996,10 @@ mkRdrRecordCon :: Located RdrName -> HsRecordBinds GhcPs -> HsExpr GhcPs
 mkRdrRecordCon con flds
   = RecordCon { rcon_ext = noExt, rcon_con_name = con, rcon_flds = flds }
 
-mk_rec_fields :: [LHsRecField id arg] -> Bool -> HsRecFields id arg
-mk_rec_fields fs False = HsRecFields { rec_flds = fs, rec_dotdot = Nothing }
-mk_rec_fields fs True  = HsRecFields { rec_flds = fs
-                                     , rec_dotdot = Just (length fs) }
+mk_rec_fields :: [LHsRecField id arg] -> Maybe SrcSpan -> HsRecFields id arg
+mk_rec_fields fs Nothing = HsRecFields { rec_flds = fs, rec_dotdot = Nothing }
+mk_rec_fields fs (Just s)  = HsRecFields { rec_flds = fs
+                                     , rec_dotdot = Just (cL s (length fs)) }
 
 mk_rec_upd_field :: HsRecField GhcPs (LHsExpr GhcPs) -> HsRecUpdField GhcPs
 mk_rec_upd_field (HsRecField (dL->L loc (FieldOcc _ rdr)) arg pun)
@@ -2168,7 +2179,7 @@ mkModuleImpExp (dL->L l specname) subs =
       (\newName -> IEThingWith noExt (cL l newName)
         NoIEWildcard (wrapped xs) []) <$> nameT
     ImpExpAllWith xs                       ->
-      do allowed <- extension patternSynonymsEnabled
+      do allowed <- getBit PatternSynonymsBit
          if allowed
           then
             let withs = map unLoc xs
@@ -2207,11 +2218,10 @@ mkModuleImpExp (dL->L l specname) subs =
 mkTypeImpExp :: Located RdrName   -- TcCls or Var name space
              -> P (Located RdrName)
 mkTypeImpExp name =
-  do allowed <- extension explicitNamespacesEnabled
-     if allowed
-       then return (fmap (`setRdrNameSpace` tcClsName) name)
-       else parseErrorSDoc (getLoc name)
-              (text "Illegal keyword 'type' (use ExplicitNamespaces to enable)")
+  do allowed <- getBit ExplicitNamespacesBit
+     unless allowed $ addError (getLoc name) $
+       text "Illegal keyword 'type' (use ExplicitNamespaces to enable)"
+     return (fmap (`setRdrNameSpace` tcClsName) name)
 
 checkImportSpec :: Located [LIE GhcPs] -> P (Located [LIE GhcPs])
 checkImportSpec ie@(dL->L _ specs) =
@@ -2263,7 +2273,7 @@ warnStarBndr span = addWarning Opt_WarnStarBinder span msg
 
 failOpFewArgs :: Located RdrName -> P a
 failOpFewArgs (dL->L loc op) =
-  do { star_is_type <- extension starIsTypeEnabled
+  do { star_is_type <- getBit StarIsTypeBit
      ; let msg = too_few $$ starInfo star_is_type op
      ; parseErrorSDoc loc msg }
   where
@@ -2295,7 +2305,7 @@ parseErrorSDoc span s = failSpanMsgP span s
 -- | Hint about bang patterns, assuming @BangPatterns@ is off.
 hintBangPat :: SrcSpan -> HsExpr GhcPs -> P ()
 hintBangPat span e = do
-    bang_on <- extension bangPatEnabled
+    bang_on <- getBit BangPatBit
     unless bang_on $
       parseErrorSDoc span
         (text "Illegal bang-pattern (use BangPatterns):" $$ ppr e)
@@ -2335,3 +2345,14 @@ mkLHsDocTy t doc =
 
 mkLHsDocTyMaybe :: LHsType GhcPs -> Maybe LHsDocString -> LHsType GhcPs
 mkLHsDocTyMaybe t = maybe t (mkLHsDocTy t)
+
+-----------------------------------------------------------------------------
+-- Token symbols
+
+starSym :: Bool -> String
+starSym True = "★"
+starSym False = "*"
+
+forallSym :: Bool -> String
+forallSym True = "∀"
+forallSym False = "forall"

@@ -855,10 +855,10 @@ mkProxyPrimTy :: Type -> Type -> Type
 mkProxyPrimTy k ty = TyConApp proxyPrimTyCon [k, ty]
 
 proxyPrimTyCon :: TyCon
-proxyPrimTyCon = mkPrimTyCon proxyPrimTyConName binders res_kind [Nominal,Nominal]
+proxyPrimTyCon = mkPrimTyCon proxyPrimTyConName binders res_kind [Nominal,Phantom]
   where
-     -- Kind: forall k. k -> Void#
-     binders = mkTemplateTyConBinders [liftedTypeKind] (\ks-> ks)
+     -- Kind: forall k. k -> TYPE (Tuple '[])
+     binders = mkTemplateTyConBinders [liftedTypeKind] id
      res_kind = unboxedTupleKind []
 
 
@@ -873,8 +873,8 @@ eqPrimTyCon :: TyCon  -- The representation type for equality predicates
                       -- See Note [The equality types story]
 eqPrimTyCon  = mkPrimTyCon eqPrimTyConName binders res_kind roles
   where
-    -- Kind :: forall k1 k2. k1 -> k2 -> Void#
-    binders  = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] (\ks -> ks)
+    -- Kind :: forall k1 k2. k1 -> k2 -> TYPE (Tuple '[])
+    binders  = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] id
     res_kind = unboxedTupleKind []
     roles    = [Nominal, Nominal, Nominal, Nominal]
 
@@ -884,8 +884,8 @@ eqPrimTyCon  = mkPrimTyCon eqPrimTyConName binders res_kind roles
 eqReprPrimTyCon :: TyCon   -- See Note [The equality types story]
 eqReprPrimTyCon = mkPrimTyCon eqReprPrimTyConName binders res_kind roles
   where
-    -- Kind :: forall k1 k2. k1 -> k2 -> Void#
-    binders  = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] (\ks -> ks)
+    -- Kind :: forall k1 k2. k1 -> k2 -> TYPE (Tuple '[])
+    binders  = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] id
     res_kind = unboxedTupleKind []
     roles    = [Nominal, Nominal, Representational, Representational]
 
@@ -895,8 +895,8 @@ eqReprPrimTyCon = mkPrimTyCon eqReprPrimTyConName binders res_kind roles
 eqPhantPrimTyCon :: TyCon
 eqPhantPrimTyCon = mkPrimTyCon eqPhantPrimTyConName binders res_kind roles
   where
-    -- Kind :: forall k1 k2. k1 -> k2 -> Void#
-    binders  = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] (\ks -> ks)
+    -- Kind :: forall k1 k2. k1 -> k2 -> TYPE (Tuple '[])
+    binders  = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] id
     res_kind = unboxedTupleKind []
     roles    = [Nominal, Nominal, Phantom, Phantom]
 

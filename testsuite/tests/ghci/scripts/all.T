@@ -53,12 +53,10 @@ test('ghci022', normal, ghci_script, ['ghci022.script'])
 test('ghci023', normal, ghci_script, ['ghci023.script'])
 test('ghci024',
      [req_interp, when(fast(), skip)],
-     run_command,
-     ['$MAKE -s --no-print-directory ghci024'])
+     makefile_test, [])
 test('T9367',
      [req_interp, when(fast() or config.os != 'mingw32', skip)],
-     run_command,
-     ['$MAKE -s --no-print-directory T9367'])
+     makefile_test, [])
 test('ghci025', extra_files(['Ghci025B.hs', 'Ghci025C.hs', 'Ghci025D.hs']), ghci_script, ['ghci025.script'])
 test('ghci026', extra_files(['../prog002']), ghci_script, ['ghci026.script'])
 
@@ -72,7 +70,7 @@ test('ghci033', normal, ghci_script, ['ghci033.script'])
 test('ghci034', normal, ghci_script, ['ghci034.script'])
 test('ghci035', normal, ghci_script, ['ghci035.script'])
 test('ghci036', normal, ghci_script, ['ghci036.script'])
-test('ghci037', req_interp, run_command, ['$MAKE -s --no-print-directory ghci037'])
+test('ghci037', req_interp, makefile_test, [])
 test('ghci038', extra_files(['../shell.hs']), ghci_script, ['ghci038.script'])
 test('ghci039', normal, ghci_script, ['ghci039.script'])
 test('ghci040', normal, ghci_script, ['ghci040.script'])
@@ -91,7 +89,7 @@ test('ghci051', normal, ghci_script, ['ghci051.script'])
 test('ghci052', normal, ghci_script, ['ghci052.script'])
 test('ghci053', normal, ghci_script, ['ghci053.script'])
 test('ghci054', normal, ghci_script, ['ghci054.script'])
-test('ghci055', [broken_without_gmp, combined_output], ghci_script, ['ghci055.script'])
+test('ghci055', combined_output, ghci_script, ['ghci055.script'])
 
 test('ghci056',
      [pre_cmd('$MAKE -s --no-print-directory ghci056_setup'),
@@ -106,7 +104,7 @@ test('ghci061', normal, ghci_script, ['ghci061.script'])
 test('ghci062', [extra_files(['ghci062/', 'ghci062/Test.hs']),
                  when(config.have_ext_interp, extra_ways(['ghci-ext']))],
 		ghci_script, ['ghci062.script'])
-test('ghci063', normal, ghci_script, ['ghci063.script'])
+test('ghci063', when(opsys('darwin'), expect_broken(16201)), ghci_script, ['ghci063.script'])
 
 test('T2452', [extra_hc_opts("-fno-implicit-import-qualified")],
     ghci_script, ['T2452.script'])
@@ -116,7 +114,7 @@ test('T1914', [], ghci_script, ['T1914.script'])
 
 test('T2182ghci', normal, ghci_script, ['T2182ghci.script'])
 test('T2182ghci2', [extra_hc_opts("-XNoImplicitPrelude")], ghci_script, ['T2182ghci2.script'])
-test('T2976', broken_without_gmp, ghci_script, ['T2976.script'])
+test('T2976', normal, ghci_script, ['T2976.script'])
 test('T2816', normal, ghci_script, ['T2816.script'])
 test('T789', normal, ghci_script, ['T789.script'])
 test('T3263', normal, ghci_script, ['T3263.script'])
@@ -219,8 +217,7 @@ test('T10122', normal, ghci_script, ['T10122.script'])
 
 test('T10321', normal, ghci_script, ['T10321.script'])
 
-test('T10408', req_interp, run_command,
-    ['$MAKE -s --no-print-directory T10408'])
+test('T10408', req_interp, makefile_test, [])
 test('T10248', normal, ghci_script, ['T10248.script'])
 test('T10110', normal, ghci_script, ['T10110.script'])
 test('T10322', normal, ghci_script, ['T10322.script'])
@@ -244,7 +241,7 @@ test('T11051a', normal, ghci_script, ['T11051a.script'])
 test('T11051b', normal, ghci_script, ['T11051b.script'])
 test('T11266', ignore_stdout, ghci_script, ['T11266.script'])
 
-test('T11389', req_interp, run_command, ['$MAKE -s --no-print-directory T11389'])
+test('T11389', req_interp, makefile_test, [])
 test('T11524a', normal, ghci_script, ['T11524a.script'])
 test('T11456', normal, ghci_script, ['T11456.script'])
 test('TypeAppData', normal, ghci_script, ['TypeAppData.script'])
@@ -255,14 +252,13 @@ test('T11975', normal, ghci_script, ['T11975.script'])
 test('T10963', normal, ghci_script, ['T10963.script'])
 test('T11721', normal, ghci_script, ['T11721.script'])
 test('T12005', normal, ghci_script, ['T12005.script'])
-test('T12023', normal, run_command,
-               ['$MAKE -s --no-print-directory T12023'])
+test('T12023', normal, makefile_test, [])
 test('T12520', normal, ghci_script, ['T12520.script'])
 test('T12091', [extra_run_opts('-fobject-code')], ghci_script,
      ['T12091.script'])
 test('T12523', normal, ghci_script, ['T12523.script'])
 test('T12024', normal, ghci_script, ['T12024.script'])
-test('T12158', expect_broken(12158), ghci_script, ['T12158.script'])
+test('T12158', normal, ghci_script, ['T12158.script'])
 test('T12447', normal, ghci_script, ['T12447.script'])
 test('T10249', normal, ghci_script, ['T10249.script'])
 test('T12550', normal, ghci_script, ['T12550.script'])
@@ -293,3 +289,6 @@ test('T15827', normal, ghci_script, ['T15827.script'])
 test('T15898', normal, ghci_script, ['T15898.script'])
 test('T15941', normal, ghci_script, ['T15941.script'])
 test('T16030', normal, ghci_script, ['T16030.script'])
+test('T11606', normal, ghci_script, ['T11606.script'])
+test('T16089', normal, ghci_script, ['T16089.script'])
+test('T14828', expect_broken(14828), ghci_script, ['T14828.script'])

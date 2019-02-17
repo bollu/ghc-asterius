@@ -13,6 +13,7 @@ import Settings
 import Settings.Default
 import Target
 import Utilities
+import Flavour
 
 -- | TODO: Drop code duplication
 buildProgramRules :: [(Resource, Int)] -> Rules ()
@@ -44,12 +45,18 @@ getProgramContexts stage = do
     -- make sure that we cover these
     -- "prof-build-under-other-name" cases.
     -- iserv gets its names from Packages.hs:programName
-    let allCtxs = [ vanillaContext stage pkg
+    --
+    profiled <- ghcProfiled <$> flavour
+    let allCtxs =
+          if pkg == ghc && profiled && stage > Stage0
+            then [ Context stage pkg profiling ]
+            else [ vanillaContext stage pkg
                   , Context stage pkg profiling
                   -- TODO Dynamic way has been reverted as the dynamic build is
                   --      broken. See #15837.
                   -- , Context stage pkg dynamic
-                  ]
+                 ]
+
     forM allCtxs $ \ctx -> do
       name <- programName ctx
       return (name <.> exe, ctx)
@@ -71,6 +78,9 @@ buildProgram bin ctx@(Context{..}) rs = do
     -- @llvm-targets@, @ghc-usage.txt@, @ghci-usage.txt@,
     -- @llvm-passes@.
     need =<< ghcDeps stage
+  when (package == haddock) $ do
+    -- Haddock has a resource folder
+    need =<< haddockDeps stage
 
   cross <- flag CrossCompiling
   -- For cross compiler, copy @stage0/bin/<pgm>@ to @stage1/bin/@.
@@ -88,7 +98,7 @@ buildBinary rs bin context@Context {..} = do
     needLibrary =<< contextDependencies context
     when (stage > Stage0) $ do
         ways <- interpretInContext context (getLibraryWays <> getRtsWays)
-        needLibrary [ rtsContext { way = w } | w <- ways ]
+        needLibrary [ (rtsContext stage) { way = w } | w <- ways ]
     cSrcs  <- interpretInContext context (getContextData cSrcs)
     cObjs  <- mapM (objectPath context) cSrcs
     hsObjs <- hsObjects context

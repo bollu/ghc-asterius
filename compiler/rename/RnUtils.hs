@@ -3,6 +3,7 @@
 This module contains miscellaneous functions related to renaming.
 
 -}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -13,8 +14,9 @@ module RnUtils (
         addFvRn, mapFvRn, mapMaybeFvRn,
         warnUnusedMatches, warnUnusedTypePatterns,
         warnUnusedTopBinds, warnUnusedLocalBinds,
+        checkUnusedRecordWildcard,
         mkFieldEnv,
-        unknownSubordinateErr, badQualBndrErr,
+        unknownSubordinateErr, badQualBndrErr, typeAppErr,
         HsDocContext(..), pprHsDocContext,
         inHsDocContext, withHsDocContext,
 
@@ -221,6 +223,57 @@ warnUnusedTopBinds gres
                                else                 gres
          warnUnusedGREs gres'
 
+
+-- | Checks to see if we need to warn for -Wunused-record-wildcards or
+-- -Wredundant-record-wildcards
+checkUnusedRecordWildcard :: SrcSpan
+                          -> FreeVars
+                          -> Maybe [Name]
+                          -> RnM ()
+checkUnusedRecordWildcard _ _ Nothing    = return ()
+checkUnusedRecordWildcard loc _ (Just [])  = do
+  -- Add a new warning if the .. pattern binds no variables
+  setSrcSpan loc $ warnRedundantRecordWildcard
+checkUnusedRecordWildcard loc fvs (Just dotdot_names) =
+  setSrcSpan loc $ warnUnusedRecordWildcard dotdot_names fvs
+
+
+-- | Produce a warning when the `..` pattern binds no new
+-- variables.
+--
+-- @
+--   data P = P { x :: Int }
+--
+--   foo (P{x, ..}) = x
+-- @
+--
+-- The `..` here doesn't bind any variables as `x` is already bound.
+warnRedundantRecordWildcard :: RnM ()
+warnRedundantRecordWildcard =
+  whenWOptM Opt_WarnRedundantRecordWildcards
+            (addWarn (Reason Opt_WarnRedundantRecordWildcards)
+                     redundantWildcardWarning)
+
+
+-- | Produce a warning when no variables bound by a `..` pattern are used.
+--
+-- @
+--   data P = P { x :: Int }
+--
+--   foo (P{..}) = ()
+-- @
+--
+-- The `..` pattern binds `x` but it is not used in the RHS so we issue
+-- a warning.
+warnUnusedRecordWildcard :: [Name] -> FreeVars -> RnM ()
+warnUnusedRecordWildcard ns used_names = do
+  let used = filter (`elemNameSet` used_names) ns
+  traceRn "warnUnused" (ppr ns $$ ppr used_names $$ ppr used)
+  warnIfFlag Opt_WarnUnusedRecordWildcards (null used)
+    unusedRecordWildcardWarning
+
+
+
 warnUnusedLocalBinds, warnUnusedMatches, warnUnusedTypePatterns
   :: [Name] -> FreeVars -> RnM ()
 warnUnusedLocalBinds   = check_unused Opt_WarnUnusedLocalBinds
@@ -295,6 +348,20 @@ addUnusedWarning flag occ span msg
          nest 2 $ pprNonVarNameSpace (occNameSpace occ)
                         <+> quotes (ppr occ)]
 
+unusedRecordWildcardWarning :: SDoc
+unusedRecordWildcardWarning =
+  wildcardDoc $ text "No variables bound in the record wildcard match are used"
+
+redundantWildcardWarning :: SDoc
+redundantWildcardWarning =
+  wildcardDoc $ text "Record wildcard does not bind any new variables"
+
+wildcardDoc :: SDoc -> SDoc
+wildcardDoc herald =
+  herald
+    $$ nest 2 (text "Possible fix" <> colon <+> text "omit the"
+                                            <+> quotes (text ".."))
+
 addNameClashErrRn :: RdrName -> [GlobalRdrElt] -> RnM ()
 addNameClashErrRn rdr_name gres
   | all isLocalGRE gres && not (all isRecFldGRE gres)
@@ -363,6 +430,11 @@ badQualBndrErr :: RdrName -> SDoc
 badQualBndrErr rdr_name
   = text "Qualified name in binding position:" <+> ppr rdr_name
 
+typeAppErr :: String -> LHsType GhcPs -> SDoc
+typeAppErr what (L _ k)
+  = hang (text "Illegal visible" <+> text what <+> text "application"
+            <+> quotes (char '@' <> ppr k))
+       2 (text "Perhaps you intended to use TypeApplications")
 
 checkTupSize :: Int -> RnM ()
 checkTupSize tup_size

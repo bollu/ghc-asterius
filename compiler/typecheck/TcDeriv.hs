@@ -330,6 +330,9 @@ renameDeriv is_boot inst_infos bagBinds
     setXOptM LangExt.KindSignatures $
     -- Derived decls (for newtype-deriving) can use ScopedTypeVariables &
     -- KindSignatures
+    setXOptM LangExt.TypeApplications $
+    -- GND/DerivingVia uses TypeApplications in generated code
+    -- (See Note [Newtype-deriving instances] in TcGenDeriv)
     unsetXOptM LangExt.RebindableSyntax $
     -- See Note [Avoid RebindableSyntax when deriving]
     do  {
@@ -1637,7 +1640,10 @@ mkNewTypeEqn
                      [ text "Both DeriveAnyClass and"
                        <+> text "GeneralizedNewtypeDeriving are enabled"
                      , text "Defaulting to the DeriveAnyClass strategy"
-                       <+> text "for instantiating" <+> ppr cls ]
+                       <+> text "for instantiating" <+> ppr cls
+                     , text "Use DerivingStrategies to pick"
+                       <+> text "a different strategy"
+                      ]
                  mk_originative_eqn DerivSpecAnyClass
                -- CanDeriveStock
                CanDeriveStock gen_fn -> mk_originative_eqn $

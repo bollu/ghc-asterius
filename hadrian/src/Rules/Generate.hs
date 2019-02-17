@@ -58,7 +58,7 @@ compilerDependencies = do
     isGmp   <- (== integerGmp) <$> getIntegerPackage
     ghcPath <- expr $ buildPath (vanillaContext stage compiler)
     gmpPath <- expr gmpBuildPath
-    rtsPath <- expr rtsBuildPath
+    rtsPath <- expr (rtsBuildPath stage)
     mconcat [ return [root -/- platformH stage]
             , return ((root -/-) <$> includesDependencies)
             , return ((root -/-) <$> derivedConstantsDependencies)
@@ -84,7 +84,8 @@ compilerDependencies = do
 generatedDependencies :: Expr [FilePath]
 generatedDependencies = do
     root    <- getBuildRoot
-    rtsPath <- expr rtsBuildPath
+    stage   <- getStage
+    rtsPath <- expr (rtsBuildPath stage)
     mconcat [ package compiler ? compilerDependencies
             , package ghcPrim  ? ghcPrimDependencies
             , package rts      ? return (fmap (rtsPath -/-) libffiDependencies
@@ -160,6 +161,12 @@ copyRules = do
     root <- buildRootRules
     forM_ [Stage0 ..] $ \stage -> do
         let prefix = root -/- stageString stage -/- "lib"
+
+            infixl 1 <~
+            pattern <~ mdir = pattern %> \file -> do
+                dir <- mdir
+                copyFile (dir -/- makeRelative prefix file) file
+
         prefix -/- "ghc-usage.txt"     <~ return "driver"
         prefix -/- "ghci-usage.txt"    <~ return "driver"
         prefix -/- "llvm-targets"      <~ return "."
@@ -167,11 +174,9 @@ copyRules = do
         prefix -/- "platformConstants" <~ (buildRoot <&> (-/- generatedDir))
         prefix -/- "settings"          <~ return "."
         prefix -/- "template-hsc.h"    <~ return (pkgPath hsc2hs)
-  where
-    infixl 1 <~
-    pattern <~ mdir = pattern %> \file -> do
-        dir <- mdir
-        copyFile (dir -/- takeFileName file) file
+
+        prefix -/- "html//*"           <~ return "utils/haddock/haddock-api/resources"
+        prefix -/- "latex//*"          <~ return "utils/haddock/haddock-api/resources"
 
 generateRules :: Rules ()
 generateRules = do
@@ -188,7 +193,7 @@ generateRules = do
     -- TODO: simplify, get rid of fake rts context
     root -/- generatedDir ++ "//*" %> \file -> do
         withTempDir $ \dir -> build $
-            target rtsContext DeriveConstants [] [file, dir]
+            target (rtsContext Stage1) DeriveConstants [] [file, dir]
   where
     file <~ gen = file %> \out -> generate out emptyTarget gen
 

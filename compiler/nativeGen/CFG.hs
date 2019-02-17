@@ -24,6 +24,7 @@ module CFG
     , getSuccEdgesSorted, weightedEdgeList
     , getEdgeInfo
     , getCfgNodes, hasNode
+    , loopMembers
 
     --Construction/Misc
     , getCfg, getCfgProc, pprEdgeWeights, sanityCheckCfg
@@ -361,7 +362,7 @@ pprEdgeWeights m =
               ppr weight <> text "\"];\n"
         --for the case that there are no edges from/to this node.
         --This should rarely happen but it can save a lot of time
-        --to immediatly see it when it does.
+        --to immediately see it when it does.
         printNode node
             = text "\t" <> ppr node <> text ";\n"
         getEdgeNodes (from, to, _weight) = [from,to]
@@ -636,3 +637,20 @@ optimizeCFG weights (CmmProc info _lab _live graph) cfg =
           | CmmSource (CmmBranch {}) <- source = True
           | CmmSource (CmmCondBranch {}) <- source = True
           | otherwise = False
+
+-- | Determine loop membership of blocks based on SCC analysis
+--   Ideally we would replace this with a variant giving us loop
+--   levels instead but the SCC code will do for now.
+loopMembers :: CFG -> LabelMap Bool
+loopMembers cfg =
+    foldl' (flip setLevel) mapEmpty sccs
+  where
+    mkNode :: BlockId -> Node BlockId BlockId
+    mkNode bid = DigraphNode bid bid (getSuccessors cfg bid)
+    nodes = map mkNode (setElems $ getCfgNodes cfg)
+
+    sccs = stronglyConnCompFromEdgedVerticesOrd nodes
+
+    setLevel :: SCC BlockId -> LabelMap Bool -> LabelMap Bool
+    setLevel (AcyclicSCC bid) m = mapInsert bid False m
+    setLevel (CyclicSCC bids) m = foldl' (\m k -> mapInsert k True m) m bids

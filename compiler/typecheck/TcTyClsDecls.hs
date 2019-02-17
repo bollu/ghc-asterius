@@ -39,7 +39,6 @@ import {-# SOURCE #-} TcInstDcls( tcInstDecls1 )
 import TcDeriv (DerivInfo)
 import TcHsType
 import ClsInst( AssocInstInfo(..) )
-import Inst( tcInstTyBinders )
 import TcMType
 import TysWiredIn ( unitTy )
 import TcType
@@ -917,7 +916,7 @@ getInitialKind cusk
        ; let parent_tv_prs = tcTyConScopedTyVars tycon
             -- See Note [Don't process associated types in kcLHsQTyVars]
        ; inner_tcs <- tcExtendNameTyVarEnv parent_tv_prs $
-                      getFamDeclInitialKinds (Just tycon) ats
+                      getFamDeclInitialKinds cusk (Just tycon) ats
        ; return (tycon : inner_tcs) }
 
 getInitialKind cusk
@@ -932,8 +931,8 @@ getInitialKind cusk
                    Nothing   -> return liftedTypeKind
         ; return [tc] }
 
-getInitialKind _ (FamDecl { tcdFam = decl })
-  = do { tc <- getFamDeclInitialKind Nothing decl
+getInitialKind cusk (FamDecl { tcdFam = decl })
+  = do { tc <- getFamDeclInitialKind cusk Nothing decl
        ; return [tc] }
 
 getInitialKind cusk (SynDecl { tcdLName = dL->L _ name
@@ -956,22 +955,24 @@ getInitialKind _ (XTyClDecl _) = panic "getInitialKind"
 
 ---------------------------------
 getFamDeclInitialKinds
-  :: Maybe TcTyCon -- ^ Enclosing class TcTyCon, if any
+  :: Bool        -- ^ True <=> cusk
+  -> Maybe TyCon -- ^ Just cls <=> this is an associated family of class cls
   -> [LFamilyDecl GhcRn]
   -> TcM [TcTyCon]
-getFamDeclInitialKinds mb_parent_tycon decls
-  = mapM (addLocM (getFamDeclInitialKind mb_parent_tycon)) decls
+getFamDeclInitialKinds cusk mb_parent_tycon decls
+  = mapM (addLocM (getFamDeclInitialKind cusk mb_parent_tycon)) decls
 
 getFamDeclInitialKind
-  :: Maybe TcTyCon -- ^ Enclosing class TcTyCon, if any
+  :: Bool        -- ^ True <=> cusk
+  -> Maybe TyCon -- ^ Just cls <=> this is an associated family of class cls
   -> FamilyDecl GhcRn
   -> TcM TcTyCon
-getFamDeclInitialKind mb_parent_tycon
+getFamDeclInitialKind parent_cusk mb_parent_tycon
     decl@(FamilyDecl { fdLName     = (dL->L _ name)
                      , fdTyVars    = ktvs
                      , fdResultSig = (dL->L _ resultSig)
                      , fdInfo      = info })
-  = kcLHsQTyVars name flav cusk ktvs $
+  = kcLHsQTyVars name flav fam_cusk ktvs $
     case resultSig of
       KindSig _ ki                              -> tcLHsKindSig ctxt ki
       TyVarSig _ (dL->L _ (KindedTyVar _ _ ki)) -> tcLHsKindSig ctxt ki
@@ -981,15 +982,15 @@ getFamDeclInitialKind mb_parent_tycon
                -- by default
         | otherwise                         -> newMetaKindVar
   where
-    mb_cusk = tcTyConIsPoly <$> mb_parent_tycon
-    cusk    = famDeclHasCusk mb_cusk decl
-    flav  = case info of
+    assoc_with_no_cusk = isJust mb_parent_tycon && not parent_cusk
+    fam_cusk = famDeclHasCusk assoc_with_no_cusk decl
+    flav = case info of
       DataFamily         -> DataFamilyFlavour mb_parent_tycon
       OpenTypeFamily     -> OpenTypeFamilyFlavour mb_parent_tycon
       ClosedTypeFamily _ -> ASSERT( isNothing mb_parent_tycon )
                             ClosedTypeFamilyFlavour
     ctxt  = TyFamResKindCtxt name
-getFamDeclInitialKind _ (XFamilyDecl _) = panic "getFamDeclInitialKind"
+getFamDeclInitialKind _ _ (XFamilyDecl _) = panic "getFamDeclInitialKind"
 
 ------------------------------------------------------------------------
 kcLTyClDecl :: LTyClDecl GhcRn -> TcM ()
@@ -1740,7 +1741,7 @@ kcTyFamInstEqn tc_fam_tc
        ; discardResult $
          bindImplicitTKBndrs_Q_Tv imp_vars $
          bindExplicitTKBndrs_Q_Tv AnyKind (mb_expl_bndrs `orElse` []) $
-         do { (_, res_kind) <- tcFamTyPats tc_fam_tc hs_pats
+         do { (_fam_app, res_kind) <- tcFamTyPats tc_fam_tc hs_pats
             ; tcCheckLHsType hs_rhs_ty res_kind }
              -- Why "_Tv" here?  Consider (Trac #14066
              --  type family Bar x y where
@@ -1868,7 +1869,7 @@ tcTyFamInstEqnGuts fam_tc mb_clsinfo imp_vars exp_bndrs hs_pats hs_rhs_ty
                   solveEqualities                              $
                   bindImplicitTKBndrs_Q_Skol imp_vars          $
                   bindExplicitTKBndrs_Q_Skol AnyKind exp_bndrs $
-                  do { (lhs_ty, rhs_kind) <- tc_lhs
+                  do { (lhs_ty, rhs_kind) <- tcFamTyPats fam_tc hs_pats
                        -- Ensure that the instance is consistent with its
                        -- parent class (#16008)
                      ; addConsistencyConstraints mb_clsinfo lhs_ty
@@ -1895,43 +1896,6 @@ tcTyFamInstEqnGuts fam_tc mb_clsinfo imp_vars exp_bndrs hs_pats hs_rhs_ty
              -- have been solved before we attempt to unravel it
        ; traceTc "tcTyFamInstEqnGuts }" (ppr fam_tc <+> pprTyVars qtvs)
        ; return (qtvs, pats, rhs_ty) }
-  where
-    tc_lhs | null hs_pats  -- See Note [Apparently-nullary families]
-           = do { (args, rhs_kind) <- tcInstTyBinders $
-                                      splitPiTysInvisibleN (tyConArity fam_tc)
-                                                           (tyConKind  fam_tc)
-                ; return (mkTyConApp fam_tc args, rhs_kind) }
-           | otherwise
-           = tcFamTyPats fam_tc hs_pats
-
-{- Note [Apparently-nullary families]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Consider
-  type family F :: k -> *
-
-This really means
-  type family F @k :: k -> *
-
-That is, the family has arity 1, and can match on the kind. So it's
-not really a nullary family.   NB that
-  type famly F2 :: forall k. k -> *
-is quite different and really does have arity 0.
-
-Returning to F we might have
-  type instannce F = Maybe
-which instantaite 'k' to '*' and really means
-  type instannce F @* = Maybe
-
-Conclusion: in this odd case where there are no LHS patterns, we
-should instantiate any invisible foralls in F's kind, to saturate
-its arity (but no more).  This is what happens in tc_lhs in
-tcTyFamInstEqnGuts.
-
-If there are any visible patterns, then the first will force
-instantiation of any Inferred quantifiers for F -- remember,
-Inferred quantifiers always come first.
--}
-
 
 -----------------
 tcFamTyPats :: TyCon
@@ -1940,9 +1904,7 @@ tcFamTyPats :: TyCon
 -- Used for both type and data families
 tcFamTyPats fam_tc hs_pats
   = do { traceTc "tcFamTyPats {" $
-         vcat [ ppr fam_tc <+> dcolon <+> ppr fam_kind
-              , text "arity:" <+> ppr fam_arity
-              , text "kind:" <+> ppr fam_kind ]
+         vcat [ ppr fam_tc, text "arity:" <+> ppr fam_arity ]
 
        ; let fun_ty = mkTyConApp fam_tc []
 
@@ -1950,18 +1912,15 @@ tcFamTyPats fam_tc hs_pats
                                 setXOptM LangExt.PartialTypeSignatures $
                                 -- See Note [Wildcards in family instances] in
                                 -- RnSource.hs
-                                tcInferApps typeLevelMode lhs_fun fun_ty
-                                            fam_kind hs_pats
+                                tcInferApps typeLevelMode lhs_fun fun_ty hs_pats
 
        ; traceTc "End tcFamTyPats }" $
-         vcat [ ppr fam_tc <+> dcolon <+> ppr fam_kind
-              , text "res_kind:" <+> ppr res_kind ]
+         vcat [ ppr fam_tc, text "res_kind:" <+> ppr res_kind ]
 
        ; return (fam_app, res_kind) }
   where
     fam_name  = tyConName fam_tc
     fam_arity = tyConArity fam_tc
-    fam_kind  = tyConKind fam_tc
     lhs_fun   = noLoc (HsTyVar noExt NotPromoted (noLoc fam_name))
 
 unravelFamInstPats :: TcType -> [TcType]
@@ -3806,6 +3765,9 @@ wrongKindOfFamily family
                  | isDataFamilyTyCon family = text "data family"
                  | otherwise = pprPanic "wrongKindOfFamily" (ppr family)
 
+-- | Produce an error for oversaturated type family equations with too many
+-- required arguments.
+-- See Note [Oversaturated type family equations] in TcValidity.
 wrongNumberOfParmsErr :: Arity -> SDoc
 wrongNumberOfParmsErr max_args
   = text "Number of parameters must match family declaration; expected"

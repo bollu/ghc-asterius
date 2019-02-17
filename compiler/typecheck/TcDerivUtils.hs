@@ -62,7 +62,7 @@ import ListSetOps (assocMaybe)
 -- is a simple reader around 'TcRn'.
 type DerivM = ReaderT DerivEnv TcRn
 
--- | Is GHC processing a stanalone deriving declaration?
+-- | Is GHC processing a standalone deriving declaration?
 isStandaloneDeriv :: DerivM Bool
 isStandaloneDeriv = asks (go . denv_ctxt)
   where
@@ -801,7 +801,7 @@ cond_functorOK allowFunctions allowExQuantifiedLastTyVar _ _ rep_tc
   = allValid (map check_con data_cons)
   where
     tc_tvs            = tyConTyVars rep_tc
-    Just (_, last_tv) = snocView tc_tvs
+    last_tv           = last tc_tvs
     bad_stupid_theta  = filter is_bad (tyConStupidTheta rep_tc)
     is_bad pred       = last_tv `elemVarSet` exactTyCoVarsOfType pred
       -- See Note [Check that the type variable is truly universal]

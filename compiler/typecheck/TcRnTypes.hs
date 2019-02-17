@@ -1020,8 +1020,8 @@ splice. In particular it is not set when the splice is renamed or typechecked.
 'RunSplice' is needed to provide a reference where 'addModFinalizer' can insert
 the finalizer (see Note [Delaying modFinalizers in untyped splices]), and
 'addModFinalizer' runs when doing Q things. Therefore, It doesn't make sense to
-set 'RunSplice' when renaming or typechecking the splice, where 'Splice', 'Brak'
-or 'Comp' are used instead.
+set 'RunSplice' when renaming or typechecking the splice, where 'Splice', 
+'Brack' or 'Comp' are used instead.
 
 -}
 
@@ -3844,7 +3844,9 @@ instance Applicative TcPluginM where
   (<*>) = ap
 
 instance Monad TcPluginM where
+#if !MIN_VERSION_base(4,13,0)
   fail = MonadFail.fail
+#endif
   TcPluginM m >>= k =
     TcPluginM (\ ev -> do a <- m ev
                           runTcPluginM (k a) ev)

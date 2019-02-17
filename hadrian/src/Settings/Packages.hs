@@ -72,7 +72,9 @@ packageArgs = do
             , ghcWithInterpreter ? notStage0 ? arg "ghci"
             , flag CrossCompiling ? arg "-terminfo"
             , notStage0 ? intLib == integerGmp ?
-              arg "integer-gmp" ]
+              arg "integer-gmp"
+            , notStage0 ? intLib == integerSimple ?
+              arg "integer-simple" ]
 
           , builder (Haddock BuildPackage) ? arg ("--optghc=-I" ++ path) ]
 
@@ -134,14 +136,13 @@ packageArgs = do
           [ builder Cc ? arg includeGmp
 
           , builder (Cabal Setup) ? mconcat
-            [ -- TODO: This should respect some settings flag "InTreeGmp".
-              -- Depending on @IncludeDir@ and @LibDir@ is bound to fail, since
-              -- these are only set if the configure script was explicilty
-              -- called with GMP include and lib dirs. Their absense as such
-              -- does not imply @in-tree-gmp@.
-              -- (null gmpIncludeDir && null gmpLibDir) ?
-              -- arg "--configure-option=--with-intree-gmp"
-              arg ("--configure-option=CFLAGS=" ++ includeGmp)
+            [ flag GmpInTree ? arg "--configure-option=--with-intree-gmp"
+            -- Windows is always built with inplace GMP until we have dynamic
+            -- linking working.
+            , windowsHost  ? arg "--configure-option=--with-intree-gmp"
+            , flag GmpFrameworkPref ?
+              arg "--configure-option=--with-gmp-framework-preferred"
+            , arg ("--configure-option=CFLAGS=" ++ includeGmp)
             , arg ("--gcc-options="             ++ includeGmp) ] ]
 
         ---------------------------------- rts ---------------------------------

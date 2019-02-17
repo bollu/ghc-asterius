@@ -395,8 +395,8 @@ load' how_much mHscMessage mod_graph = do
                    | otherwise  = upsweep
 
     setSession hsc_env{ hsc_HPT = emptyHomePackageTable }
-    (upsweep_ok, modsUpswept)
-       <- upsweep_fn mHscMessage pruned_hpt stable_mods cleanup mg
+    (upsweep_ok, modsUpswept) <- withDeferredDiagnostics $
+      upsweep_fn mHscMessage pruned_hpt stable_mods cleanup mg
 
     -- Make modsDone be the summaries for each home module now
     -- available; this should equal the domain of hpt3.
@@ -2045,6 +2045,9 @@ enableCodeGenForTH target nodemap =
         , ms_hspp_opts = dflags@DynFlags
           {hscTarget = HscNothing}
         } <- ms
+      -- Don't enable codegen for TH on indefinite packages; we
+      -- can't compile anything anyway! See #16219.
+      , not (isIndefinite dflags)
       , ms_mod `Set.member` needs_codegen_set
       = do
         let new_temp_file suf dynsuf = do
@@ -2456,6 +2459,41 @@ preprocessFile hsc_env src_fn mb_phase (Just (buf, _time))
 -----------------------------------------------------------------------------
 --                      Error messages
 -----------------------------------------------------------------------------
+
+-- Defer and group warning, error and fatal messages so they will not get lost
+-- in the regular output.
+withDeferredDiagnostics :: GhcMonad m => m a -> m a
+withDeferredDiagnostics f = do
+  dflags <- getDynFlags
+  if not $ gopt Opt_DeferDiagnostics dflags
+  then f
+  else do
+    warnings <- liftIO $ newIORef []
+    errors <- liftIO $ newIORef []
+    fatals <- liftIO $ newIORef []
+
+    let deferDiagnostics _dflags !reason !severity !srcSpan !style !msg = do
+          let action = putLogMsg dflags reason severity srcSpan style msg
+          case severity of
+            SevWarning -> atomicModifyIORef' warnings $ \i -> (action: i, ())
+            SevError -> atomicModifyIORef' errors $ \i -> (action: i, ())
+            SevFatal -> atomicModifyIORef' fatals $ \i -> (action: i, ())
+            _ -> action
+
+        printDeferredDiagnostics = liftIO $
+          forM_ [warnings, errors, fatals] $ \ref -> do
+            -- This IORef can leak when the dflags leaks, so let us always
+            -- reset the content.
+            actions <- atomicModifyIORef' ref $ \i -> ([], i)
+            sequence_ $ reverse actions
+
+        setLogAction action = modifySession $ \hsc_env ->
+          hsc_env{ hsc_dflags = (hsc_dflags hsc_env){ log_action = action } }
+
+    gbracket
+      (setLogAction deferDiagnostics)
+      (\_ -> setLogAction (log_action dflags) >> printDeferredDiagnostics)
+      (\_ -> f)
 
 noModError :: DynFlags -> SrcSpan -> ModuleName -> FindResult -> ErrMsg
 -- ToDo: we don't have a proper line number for this error

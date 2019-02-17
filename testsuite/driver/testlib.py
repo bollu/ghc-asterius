@@ -18,8 +18,9 @@ from pathlib import PurePath
 import collections
 import subprocess
 
-from testglobals import config, ghc_env, default_testopts, brokens, t
-from testutil import strip_quotes, lndir, link_or_copy_file, passed, failBecause, str_fail, str_pass
+from testglobals import config, ghc_env, default_testopts, brokens, t, TestResult
+from testutil import strip_quotes, lndir, link_or_copy_file, passed, failBecause, failBecauseStderr, str_fail, str_pass
+from cpu_features import have_cpu_feature
 import perf_notes as Perf
 from perf_notes import MetricChange
 extra_src_files = {'T4198': ['exitminus1.c']} # TODO: See #12223
@@ -64,7 +65,7 @@ def isCompilerStatsTest():
 
 def isStatsTest():
     opts = getTestOpts()
-    return bool(opts.stats_range_fields)
+    return opts.is_stats_test
 
 
 # This can be called at the top of a file of tests, to set default test options
@@ -347,29 +348,18 @@ def testing_metrics():
 # measures the performance numbers of the compiler.
 # As this is a fairly rare case in the testsuite, it defaults to false to
 # indicate that it is a 'normal' performance test.
-def _collect_stats(name, opts, metric, deviation, is_compiler_stats_test=False):
+def _collect_stats(name, opts, metrics, deviation, is_compiler_stats_test=False):
     if not re.match('^[0-9]*[a-zA-Z][a-zA-Z0-9._-]*$', name):
         failBecause('This test has an invalid name.')
 
-    tests = Perf.get_perf_stats('HEAD^')
+    # Normalize metrics to a list of strings.
+    if isinstance(metrics, str):
+        if metrics == 'all':
+            metrics = testing_metrics()
+        else:
+            metrics = [metrics]
 
-    # Might have multiple metrics being measured for a single test.
-    test = [t for t in tests if t.test == name]
-
-    if tests == [] or test == []:
-        # There are no prior metrics for this test.
-        if isinstance(metric, str):
-            if metric == 'all':
-                for field in testing_metrics():
-                    opts.stats_range_fields[field] = None
-            else:
-                opts.stats_range_fields[metric] = None
-        if isinstance(metric, list):
-            for field in metric:
-                opts.stats_range_fields[field] = None
-
-        return
-
+    opts.is_stats_test = True
     if is_compiler_stats_test:
         opts.is_compiler_stats_test = True
 
@@ -378,24 +368,12 @@ def _collect_stats(name, opts, metric, deviation, is_compiler_stats_test=False):
     if config.compiler_debugged and is_compiler_stats_test:
         opts.skip = 1
 
-    # get the average value of the given metric from test
-    def get_avg_val(metric_2):
-        metric_2_metrics = [float(t.value) for t in test if t.metric == metric_2]
-        return sum(metric_2_metrics) / len(metric_2_metrics)
+    for metric in metrics:
+        def baselineByWay(way, target_commit, metric=metric):
+            return Perf.baseline_metric( \
+                              target_commit, name, config.test_env, metric, way)
 
-    # 'all' is a shorthand to test for bytes allocated, peak megabytes allocated, and max bytes used.
-    if isinstance(metric, str):
-        if metric == 'all':
-            for field in testing_metrics():
-                opts.stats_range_fields[field] = (get_avg_val(field), deviation)
-                return
-        else:
-            opts.stats_range_fields[metric] = (get_avg_val(metric), deviation)
-            return
-
-    if isinstance(metric, list):
-        for field in metric:
-            opts.stats_range_fields[field] = (get_avg_val(field), deviation)
+        opts.stats_range_fields[metric] = (baselineByWay, deviation)
 
 # -----
 
@@ -467,8 +445,14 @@ def have_gdb( ):
 def have_readelf( ):
     return config.have_readelf
 
-# Many tests sadly break with integer-simple due to GHCi's ignorance of it.
-broken_without_gmp = unless(have_library('integer-gmp'), expect_broken(16043))
+def integer_gmp( ):
+    return have_library("integer-gmp")
+
+def integer_simple( ):
+    return have_library("integer-simple")
+
+def llvm_build ( ):
+    return config.ghc_built_by_llvm
 
 # ---
 
@@ -884,6 +868,8 @@ def do_test(name, way, func, args, files):
         if os.path.isfile(src):
             link_or_copy_file(src, dst)
         elif os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
             os.mkdir(dst)
             lndir(src, dst)
         else:
@@ -896,7 +882,7 @@ def do_test(name, way, func, args, files):
                 framework_fail(name, way,
                     'extra_file does not exist: ' + extra_file)
 
-    if func.__name__ == 'run_command' or opts.pre_cmd:
+    if func.__name__ == 'run_command' or func.__name__ == 'makefile_test' or opts.pre_cmd:
         # When running 'MAKE' make sure 'TOP' still points to the
         # root of the testsuite.
         src_makefile = in_srcdir('Makefile')
@@ -931,24 +917,25 @@ def do_test(name, way, func, args, files):
 
     if passFail == 'pass':
         if _expect_pass(way):
-            t.expected_passes.append((directory, name, way))
+            t.expected_passes.append(TestResult(directory, name, "", way))
             t.n_expected_passes += 1
         else:
             if_verbose(1, '*** unexpected pass for %s' % full_name)
-            t.unexpected_passes.append((directory, name, 'unexpected', way))
+            t.unexpected_passes.append(TestResult(directory, name, 'unexpected', way))
     elif passFail == 'fail':
         if _expect_pass(way):
             reason = result['reason']
             tag = result.get('tag')
             if tag == 'stat':
                 if_verbose(1, '*** unexpected stat test failure for %s' % full_name)
-                t.unexpected_stat_failures.append((directory, name, reason, way))
+                t.unexpected_stat_failures.append(TestResult(directory, name, reason, way))
             else:
                 if_verbose(1, '*** unexpected failure for %s' % full_name)
-                t.unexpected_failures.append((directory, name, reason, way))
+                result = TestResult(directory, name, reason, way, stderr=result.get('stderr'))
+                t.unexpected_failures.append(result)
         else:
             if opts.expect == 'missing-lib':
-                t.missing_libs.append((directory, name, 'missing-lib', way))
+                t.missing_libs.append(TestResult(directory, name, 'missing-lib', way))
             else:
                 t.n_expected_failures += 1
     else:
@@ -971,14 +958,14 @@ def framework_fail(name, way, reason):
     directory = re.sub('^\\.[/\\\\]', '', opts.testdir)
     full_name = name + '(' + way + ')'
     if_verbose(1, '*** framework failure for %s %s ' % (full_name, reason))
-    t.framework_failures.append((directory, name, way, reason))
+    t.framework_failures.append(TestResult(directory, name, reason, way))
 
 def framework_warn(name, way, reason):
     opts = getTestOpts()
     directory = re.sub('^\\.[/\\\\]', '', opts.testdir)
     full_name = name + '(' + way + ')'
     if_verbose(1, '*** framework warning for %s %s ' % (full_name, reason))
-    t.framework_warnings.append((directory, name, way, reason))
+    t.framework_warnings.append(TestResult(directory, name, reason, way))
 
 def badResult(result):
     try:
@@ -1001,6 +988,13 @@ def badResult(result):
 
 def run_command( name, way, cmd ):
     return simple_run( name, '', override_options(cmd), '' )
+
+def makefile_test( name, way, target=None ):
+    if target is None:
+        target = name
+
+    cmd = '$MAKE -s --no-print-directory {target}'.format(target=target)
+    return run_command(name, way, cmd)
 
 # -----------------------------------------------------------------------------
 # GHCi tests
@@ -1073,15 +1067,20 @@ def do_compile(name, way, should_fail, top_mod, extra_mods, extra_hc_opts, **kwa
 
     expected_stderr_file = find_expected_file(name, 'stderr')
     actual_stderr_file = add_suffix(name, 'comp.stderr')
+    diff_file_name = in_testdir(add_suffix(name, 'comp.diff'))
 
     if not compare_outputs(way, 'stderr',
                            join_normalisers(getTestOpts().extra_errmsg_normaliser,
                                             normalise_errmsg),
                            expected_stderr_file, actual_stderr_file,
+                           diff_file=diff_file_name,
                            whitespace_normaliser=getattr(getTestOpts(),
                                                          "whitespace_normaliser",
                                                          normalise_whitespace)):
-        return failBecause('stderr mismatch')
+        stderr = open(diff_file_name, 'rb').read()
+        os.remove(diff_file_name)
+        return failBecauseStderr('stderr mismatch', stderr=stderr )
+
 
     # no problems found, this test passed
     return passed()
@@ -1157,10 +1156,11 @@ def metric_dict(name, way, metric, value):
 # name: name of the test.
 # way: the way.
 # stats_file: the path of the stats_file containing the stats for the test.
-# range_fields
+# range_fields: see TestOptions.stats_range_fields
 # Returns a pass/fail object. Passes if the stats are withing the expected value ranges.
 # This prints the results for the user.
 def check_stats(name, way, stats_file, range_fields):
+    head_commit = Perf.commit_hash('HEAD')
     result = passed()
     if range_fields:
         try:
@@ -1170,7 +1170,7 @@ def check_stats(name, way, stats_file, range_fields):
         stats_file_contents = f.read()
         f.close()
 
-        for (metric, range_val_dev) in range_fields.items():
+        for (metric, baseline_and_dev) in range_fields.items():
             field_match = re.search('\("' + metric + '", "([0-9]+)"\)', stats_file_contents)
             if field_match == None:
                 print('Failed to find metric: ', metric)
@@ -1183,14 +1183,15 @@ def check_stats(name, way, stats_file, range_fields):
                 change = None
 
                 # If this is the first time running the benchmark, then pass.
-                if range_val_dev == None:
+                baseline = baseline_and_dev[0](way, head_commit)
+                if baseline == None:
                     metric_result = passed()
                     change = MetricChange.NewMetric
                 else:
-                    (expected_val, tolerance_dev) = range_val_dev
+                    tolerance_dev = baseline_and_dev[1]
                     (change, metric_result) = Perf.check_stats_change(
                         perf_stat,
-                        expected_val,
+                        baseline,
                         tolerance_dev,
                         config.allowed_perf_changes,
                         config.verbose >= 4)
@@ -1275,10 +1276,11 @@ def simple_build(name, way, extra_hc_opts, should_fail, top_mod, link, addsuf, b
 
     exit_code = runCmd(cmd, None, stdout, stderr, opts.compile_timeout_multiplier)
 
+    actual_stderr_path = in_testdir(name, 'comp.stderr')
+
     if exit_code != 0 and not should_fail:
         if config.verbose >= 1 and _expect_pass(way):
             print('Compile failed (exit code {0}) errors were:'.format(exit_code))
-            actual_stderr_path = in_testdir(name, 'comp.stderr')
             dump_file(actual_stderr_path)
 
     # ToDo: if the sub-shell was killed by ^C, then exit
@@ -1290,10 +1292,12 @@ def simple_build(name, way, extra_hc_opts, should_fail, top_mod, link, addsuf, b
 
     if should_fail:
         if exit_code == 0:
-            return failBecause('exit code 0')
+            stderr_contents = open(actual_stderr_path, 'rb').read()
+            return failBecauseStderr('exit code 0', stderr_contents)
     else:
         if exit_code != 0:
-            return failBecause('exit code non-0')
+            stderr_contents = open(actual_stderr_path, 'rb').read()
+            return failBecauseStderr('exit code non-0', stderr_contents)
 
     return passed()
 
@@ -1323,8 +1327,13 @@ def simple_run(name, way, prog, extra_run_opts):
 
     my_rts_flags = rts_flags(way)
 
+    # Collect stats if necessary:
+    # isStatsTest and not isCompilerStatsTest():
+    #   assume we are running a ghc compiled program. Collect stats.
+    # isStatsTest and way == 'ghci':
+    #   assume we are running a program via ghci. Collect stats
     stats_file = name + '.stats'
-    if isStatsTest() and not isCompilerStatsTest():
+    if isStatsTest() and (not isCompilerStatsTest() or way == 'ghci'):
         stats_args = ' +RTS -V0 -t' + stats_file + ' --machine-readable -RTS'
     else:
         stats_args = ''
@@ -1606,7 +1615,7 @@ def check_prof_ok(name, way):
 # new output. Returns true if output matched or was accepted, false
 # otherwise. See Note [Output comparison] for the meaning of the
 # normaliser and whitespace_normaliser parameters.
-def compare_outputs(way, kind, normaliser, expected_file, actual_file,
+def compare_outputs(way, kind, normaliser, expected_file, actual_file, diff_file=None,
                     whitespace_normaliser=lambda x:x):
 
     expected_path = in_srcdir(expected_file)
@@ -1641,6 +1650,7 @@ def compare_outputs(way, kind, normaliser, expected_file, actual_file,
             # See Note [Output comparison].
             r = runCmd('diff -uw "{0}" "{1}"'.format(expected_normalised_path,
                                                         actual_normalised_path),
+                        stdout=diff_file,
                         print_output=True)
 
             # If for some reason there were no non-whitespace differences,
@@ -1648,7 +1658,10 @@ def compare_outputs(way, kind, normaliser, expected_file, actual_file,
             if r == 0:
                 r = runCmd('diff -u "{0}" "{1}"'.format(expected_normalised_path,
                                                            actual_normalised_path),
+                           stdout=diff_file,
                            print_output=True)
+        elif diff_file: open(diff_file, 'ab').close() # Make sure the file exists still as
+                                            # we will try to read it later
 
         if config.accept and (getTestOpts().expect == 'fail' or
                               way in getTestOpts().expect_fail_for):
@@ -2138,19 +2151,22 @@ def summary(t, file, short=False, color=False):
         file.write('WARNING: Testsuite run was terminated early\n')
 
 def printUnexpectedTests(file, testInfoss):
-    unexpected = set(name for testInfos in testInfoss
-                       for (_, name, _, _) in testInfos
-                       if not name.endswith('.T'))
+    unexpected = set(result.testname
+                     for testInfos in testInfoss
+                     for result in testInfos
+                     if not result.testname.endswith('.T'))
     if unexpected:
         file.write('Unexpected results from:\n')
         file.write('TEST="' + ' '.join(sorted(unexpected)) + '"\n')
         file.write('\n')
 
 def printTestInfosSummary(file, testInfos):
-    maxDirLen = max(len(directory) for (directory, _, _, _) in testInfos)
-    for (directory, name, reason, way) in testInfos:
-        directory = directory.ljust(maxDirLen)
-        file.write('   {directory}  {name} [{reason}] ({way})\n'.format(**locals()))
+    maxDirLen = max(len(tr.directory) for tr in testInfos)
+    for result in testInfos:
+        directory = result.directory.ljust(maxDirLen)
+        file.write('   {directory}  {r.testname} [{r.reason}] ({r.way})\n'.format(
+            r = result,
+            directory = directory))
     file.write('\n')
 
 def modify_lines(s, f):

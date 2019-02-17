@@ -738,7 +738,7 @@ isBuiltInOcc_maybe occ =
                 in Just $ dataConName $ sumDataCon alt arity
       _ -> Nothing
   where
-    name = fastStringToByteString $ occNameFS occ
+    name = bytesFS $ occNameFS occ
 
     choose_ns :: Name -> Name -> Name
     choose_ns tc dc
@@ -1074,7 +1074,7 @@ eqSCSelId, heqSCSelId, coercibleSCSelId :: Id
     datacon   = pcDataCon heqDataConName tvs [sc_pred] tycon
 
     -- Kind: forall k1 k2. k1 -> k2 -> Constraint
-    binders   = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] (\ks -> ks)
+    binders   = mkTemplateTyConBinders [liftedTypeKind, liftedTypeKind] id
     roles     = [Nominal, Nominal, Nominal, Nominal]
     rhs       = mkDataTyConRhs [datacon]
 

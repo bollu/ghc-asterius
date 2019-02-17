@@ -63,8 +63,8 @@ module HscMain
     , hscGetModuleInterface
     , hscRnImportDecls
     , hscTcRnLookupRdrName
-    , hscStmt, hscStmtWithLocation, hscParsedStmt
-    , hscDecls, hscDeclsWithLocation
+    , hscStmt, hscParseStmtWithLocation, hscStmtWithLocation, hscParsedStmt
+    , hscDecls, hscParseDeclsWithLocation, hscDeclsWithLocation, hscParsedDecls
     , hscTcExpr, TcRnExprMode(..), hscImport, hscKcType
     , hscParseExpr
     , hscCompileCoreExpr
@@ -408,8 +408,9 @@ extract_renamed_stuff mod_summary tc_result = do
 
     -- Create HIE files
     when (gopt Opt_WriteHie dflags) $ do
-        hieFile <- mkHieFile mod_summary (tcg_binds tc_result)
-                                         (fromJust rn_info)
+        -- I assume this fromJust is safe because `-fwrite-hie-file`
+        -- enables the option which keeps the renamed source.
+        hieFile <- mkHieFile mod_summary tc_result (fromJust rn_info)
         let out_file = ml_hie_file $ ms_location mod_summary
         liftIO $ writeHieFile out_file hieFile
 
@@ -1602,17 +1603,27 @@ hscDecls :: HscEnv
          -> IO ([TyThing], InteractiveContext)
 hscDecls hsc_env str = hscDeclsWithLocation hsc_env str "<interactive>" 1
 
+hscParseDeclsWithLocation :: HscEnv -> String -> Int -> String -> IO [LHsDecl GhcPs]
+hscParseDeclsWithLocation hsc_env source line_num str = do
+    L _ (HsModule{ hsmodDecls = decls }) <-
+      runInteractiveHsc hsc_env $
+        hscParseThingWithLocation source line_num parseModule str
+    return decls
+
 -- | Compile a decls
 hscDeclsWithLocation :: HscEnv
                      -> String -- ^ The statement
                      -> String -- ^ The source
                      -> Int    -- ^ Starting line
                      -> IO ([TyThing], InteractiveContext)
-hscDeclsWithLocation hsc_env0 str source linenumber =
- runInteractiveHsc hsc_env0 $ do
+hscDeclsWithLocation hsc_env str source linenumber = do
     L _ (HsModule{ hsmodDecls = decls }) <-
+      runInteractiveHsc hsc_env $
         hscParseThingWithLocation source linenumber parseModule str
+    hscParsedDecls hsc_env decls
 
+hscParsedDecls :: HscEnv -> [LHsDecl GhcPs] -> IO ([TyThing], InteractiveContext)
+hscParsedDecls hsc_env decls = runInteractiveHsc hsc_env $ do
     {- Rename and typecheck it -}
     hsc_env <- getHscEnv
     tc_gblenv <- ioMsgMaybe $ tcRnDeclsi hsc_env decls
