@@ -47,7 +47,6 @@ module TcHsType (
         typeLevelMode, kindLevelMode,
 
         kindGeneralize, checkExpectedKind_pp,
-        reportFloatingKvs,
 
         -- Sort-checking kinds
         tcLHsKindSig, badKindSig,
@@ -80,7 +79,7 @@ import TyCoRep  ( Type(..) )
 import TcErrors ( reportAllUnsolved )
 import TcType
 import Inst   ( tcInstInvisibleTyBinders, tcInstInvisibleTyBinder )
-import TyCoRep( TyCoBinder(..), tyCoBinderArgFlag )  -- Used in etaExpandAlgTyCon
+import TyCoRep( TyCoBinder(..) )  -- Used in etaExpandAlgTyCon
 import Type
 import TysPrim
 import Coercion
@@ -622,7 +621,6 @@ tc_lhs_type mode (L span ty) exp_kind
   = setSrcSpan span $
     tc_hs_type mode ty exp_kind
 
-------------------------------------------
 tc_hs_type :: TcTyMode -> HsType GhcRn -> TcKind -> TcM TcType
 -- See Note [Bidirectional type checking]
 
@@ -668,14 +666,18 @@ tc_hs_type mode (HsOpTy _ ty1 (L _ op) ty2) exp_kind
   = tc_fun_type mode ty1 ty2 exp_kind
 
 --------- Foralls
-tc_hs_type mode forall@(HsForAllTy { hst_bndrs = hs_tvs, hst_body = ty }) exp_kind
+tc_hs_type mode forall@(HsForAllTy { hst_fvf = fvf, hst_bndrs = hs_tvs
+                                   , hst_body = ty }) exp_kind
   = do { (tclvl, wanted, (tvs', ty'))
             <- pushLevelAndCaptureConstraints $
                bindExplicitTKBndrs_Skol hs_tvs $
                tc_lhs_type mode ty exp_kind
     -- Do not kind-generalise here!  See Note [Kind generalisation]
     -- Why exp_kind?  See Note [Body kind of HsForAllTy]
-       ; let bndrs       = mkTyVarBinders Specified tvs'
+       ; let argf        = case fvf of
+                             ForallVis   -> Required
+                             ForallInvis -> Specified
+             bndrs       = mkTyVarBinders argf tvs'
              skol_info   = ForAllSkol (ppr forall)
              m_telescope = Just (sep (map ppr hs_tvs))
 
@@ -822,12 +824,12 @@ tc_fun_type mode ty1 ty2 exp_kind = case mode_level mode of
        ; res_k <- newOpenTypeKind
        ; ty1' <- tc_lhs_type mode ty1 arg_k
        ; ty2' <- tc_lhs_type mode ty2 res_k
-       ; checkExpectedKind (HsFunTy noExt ty1 ty2) (mkFunTy ty1' ty2')
+       ; checkExpectedKind (HsFunTy noExt ty1 ty2) (mkVisFunTy ty1' ty2')
                            liftedTypeKind exp_kind }
   KindLevel ->  -- no representation polymorphism in kinds. yet.
     do { ty1' <- tc_lhs_type mode ty1 liftedTypeKind
        ; ty2' <- tc_lhs_type mode ty2 liftedTypeKind
-       ; checkExpectedKind (HsFunTy noExt ty1 ty2) (mkFunTy ty1' ty2')
+       ; checkExpectedKind (HsFunTy noExt ty1 ty2) (mkVisFunTy ty1' ty2')
                            liftedTypeKind exp_kind }
 
 ---------------------------
@@ -1047,17 +1049,17 @@ tcInferApps_nosat mode orig_hs_ty fun orig_hs_args
 
       ---------------- HsTypeArg: a kind application (fun @ki)
       (HsTypeArg _ hs_ki_arg : hs_args, Just (ki_binder, inner_ki)) ->
-        case tyCoBinderArgFlag ki_binder of
+        case ki_binder of
 
         -- FunTy with PredTy on LHS, or ForAllTy with Inferred
-        Inferred  -> instantiate ki_binder inner_ki
+        Named (Bndr _ Inferred) -> instantiate ki_binder inner_ki
+        Anon InvisArg _         -> instantiate ki_binder inner_ki
 
-        -- Specified (invisible) binder with visible kind argument
-        Specified ->
+        Named (Bndr _ Specified) ->  -- Visible kind application
           do { traceTc "tcInferApps (vis kind app)"
                        (vcat [ ppr ki_binder, ppr hs_ki_arg
                              , ppr (tyBinderType ki_binder)
-                             , ppr subst, ppr (tyCoBinderArgFlag ki_binder) ])
+                             , ppr subst ])
 
              ; let exp_kind = substTy subst $ tyBinderType ki_binder
 
@@ -1072,17 +1074,10 @@ tcInferApps_nosat mode orig_hs_ty fun orig_hs_args
              ; (subst', fun') <- mkAppTyM subst fun ki_binder ki_arg
              ; go (n+1) fun' subst' inner_ki hs_args }
 
-        -- Visible kind application, but we need a normal type application; error.
-        -- This happens when we have (fun @ki) but (fun :: k1 -> k2),
-        -- that is, without a forall
-        Required ->
-          do { traceTc "tcInferApps (error)"
-                       (vcat [ ppr ki_binder
-                             , ppr hs_ki_arg
-                             , ppr (tyBinderType ki_binder)
-                             , ppr subst
-                             , ppr (isInvisibleBinder ki_binder) ])
-             ; ty_app_err hs_ki_arg $ substTy subst fun_ki }
+        -- Attempted visible kind application (fun @ki), but fun_ki is
+        --   forall k -> blah   or   k1 -> k2
+        -- So we need a normal application.  Error.
+        _ -> ty_app_err hs_ki_arg $ substTy subst fun_ki
 
       -- No binder; try applying the substitution, or fail if that's not possible
       (HsTypeArg _ ki_arg : _, Nothing) -> try_again_after_substing_or $
@@ -1091,7 +1086,7 @@ tcInferApps_nosat mode orig_hs_ty fun orig_hs_args
       ---------------- HsValArg: a nomal argument (fun ty)
       (HsValArg arg : args, Just (ki_binder, inner_ki))
         -- next binder is invisible; need to instantiate it
-        | isInvisibleBinder ki_binder   -- FunTy with PredTy on LHS;
+        | isInvisibleBinder ki_binder   -- FunTy with InvisArg on LHS;
                                         -- or ForAllTy with Inferred or Specified
          -> instantiate ki_binder inner_ki
 
@@ -1129,9 +1124,7 @@ tcInferApps_nosat mode orig_hs_ty fun orig_hs_args
       where
         instantiate ki_binder inner_ki
           = do { traceTc "tcInferApps (need to instantiate)"
-                         (vcat [ ppr ki_binder
-                               , ppr subst
-                               , ppr (tyCoBinderArgFlag ki_binder)])
+                         (vcat [ ppr ki_binder, ppr subst])
                ; (subst', arg') <- tcInstInvisibleTyBinder subst ki_binder
                ; go n (mkAppTy fun arg') subst' inner_ki all_args }
                  -- Because tcInvisibleTyBinder instantiate ki_binder,
@@ -1438,6 +1431,7 @@ tcTyVar mode name         -- Could be a tyvar, a tycon, or a datacon
                        -- see Trac #15245
                        promotionErr name FamDataConPE
                    ; let (_, _, _, theta, _, _) = dataConFullSig dc
+                   ; traceTc "tcTyVar" (ppr dc <+> ppr theta $$ ppr (dc_theta_illegal_constraint theta))
                    ; case dc_theta_illegal_constraint theta of
                        Just pred -> promotionErr name $
                                     ConstrainedDataConPE pred
@@ -1458,15 +1452,9 @@ tcTyVar mode name         -- Could be a tyvar, a tycon, or a datacon
 
     -- We cannot promote a data constructor with a context that contains
     -- constraints other than equalities, so error if we find one.
-    -- See Note [Constraints handled in types] in Inst.
+    -- See Note [Constraints in kinds] in TyCoRep
     dc_theta_illegal_constraint :: ThetaType -> Maybe PredType
-    dc_theta_illegal_constraint = find go
-      where
-        go :: PredType -> Bool
-        go pred | Just tc <- tyConAppTyCon_maybe pred
-                = not $  tc `hasKey` eqTyConKey
-                      || tc `hasKey` heqTyConKey
-                | otherwise = True
+    dc_theta_illegal_constraint = find (not . isEqPred)
 
 {-
 Note [GADT kind self-reference]
@@ -1835,7 +1823,7 @@ kcLHsQTyVars_Cusk, kcLHsQTyVars_NonCusk
 
 ------------------------------
 kcLHsQTyVars_Cusk name flav
-  user_tyvars@(HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kv_ns
+              (HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kv_ns
                                            , hsq_dependent = dep_names }
                       , hsq_explicit = hs_tvs }) thing_inside
   -- CUSK case
@@ -1876,7 +1864,7 @@ kcLHsQTyVars_Cusk name flav
                               ++ map (mkRequiredTyConBinder mentioned_kv_set) tc_tvs
 
              all_tv_prs = mkTyVarNamePairs (scoped_kvs ++ tc_tvs)
-             tycon = mkTcTyCon name (ppr user_tyvars)
+             tycon = mkTcTyCon name
                                final_tc_binders
                                res_kind
                                all_tv_prs
@@ -1885,13 +1873,6 @@ kcLHsQTyVars_Cusk name flav
          -- Note [Required, Specified, and Inferred for types] in TcTyClsDecls
          -- doesn't work, we catch it here, before an error cascade
        ; checkValidTelescope tycon
-
-          -- If any of the specified tyvars aren't actually mentioned in a binder's
-          -- kind (or the return kind), then we're in the CUSK case from
-          -- Note [Free-floating kind vars]
-       ; let unmentioned_kvs   = filterOut (`elemVarSet` mentioned_kv_set) specified
-       ; reportFloatingKvs name flav (map binderVar final_tc_binders) unmentioned_kvs
-
 
        ; traceTc "kcLHsQTyVars: cusk" $
          vcat [ text "name" <+> ppr name
@@ -1918,7 +1899,7 @@ kcLHsQTyVars_Cusk _ _ (XLHsQTyVars _) _ = panic "kcLHsQTyVars"
 
 ------------------------------
 kcLHsQTyVars_NonCusk name flav
-  user_tyvars@(HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kv_ns
+              (HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kv_ns
                                            , hsq_dependent = dep_names }
                       , hsq_explicit = hs_tvs }) thing_inside
   -- Non_CUSK case
@@ -1940,7 +1921,7 @@ kcLHsQTyVars_NonCusk name flav
                -- Also, note that tc_binders has the tyvars from only the
                -- user-written tyvarbinders. See S1 in Note [How TcTyCons work]
                -- in TcTyClsDecls
-             tycon = mkTcTyCon name (ppr user_tyvars) tc_binders res_kind
+             tycon = mkTcTyCon name tc_binders res_kind
                                (mkTyVarNamePairs (scoped_kvs ++ tc_tvs))
                                False -- not yet generalised
                                flav
@@ -1960,7 +1941,7 @@ kcLHsQTyVars_NonCusk name flav
        | hsLTyVarName hs_tv `elemNameSet` dep_names
        = mkNamedTyConBinder Required tv
        | otherwise
-       = mkAnonTyConBinder tv
+       = mkAnonTyConBinder VisArg tv
 
 kcLHsQTyVars_NonCusk _ _ (XLHsQTyVars _) _ = panic "kcLHsQTyVars"
 
@@ -2388,13 +2369,13 @@ etaExpandAlgTyCon tc_bndrs kind
       = case splitPiTy_maybe kind of
           Nothing -> (reverse acc, substTy subst kind)
 
-          Just (Anon arg, kind')
+          Just (Anon _ arg, kind')
             -> go loc occs' uniqs' subst' (tcb : acc) kind'
             where
               arg'   = substTy subst arg
               tv     = mkTyVar (mkInternalName uniq occ loc) arg'
               subst' = extendTCvInScope subst tv
-              tcb    = Bndr tv AnonTCB
+              tcb    = Bndr tv (AnonTCB VisArg)
               (uniq:uniqs') = uniqs
               (occ:occs')   = occs
 
@@ -2423,7 +2404,7 @@ tcbVisibilities tc orig_args
     go fun_kind subst all_args@(arg : args)
       | Just (tcb, inner_kind) <- splitPiTy_maybe fun_kind
       = case tcb of
-          Anon _              -> AnonTCB      : go inner_kind subst  args
+          Anon af _           -> AnonTCB af   : go inner_kind subst  args
           Named (Bndr tv vis) -> NamedTCB vis : go inner_kind subst' args
                  where
                     subst' = extendTCvSubst subst tv arg
@@ -2809,8 +2790,7 @@ zonkPromoteType = mapType zonkPromoteMapper ()
 
 -- cf. TcMType.zonkTcTypeMapper
 zonkPromoteMapper :: TyCoMapper () TcM
-zonkPromoteMapper = TyCoMapper { tcm_smart    = True
-                               , tcm_tyvar    = const zonkPromoteTcTyVar
+zonkPromoteMapper = TyCoMapper { tcm_tyvar    = const zonkPromoteTcTyVar
                                , tcm_covar    = const covar
                                , tcm_hole     = const hole
                                , tcm_tycobinder = const tybinder
@@ -2905,8 +2885,6 @@ promotionErr name err
                NoDataKindsTC  -> text "perhaps you intended to use DataKinds"
                NoDataKindsDC  -> text "perhaps you intended to use DataKinds"
                PatSynPE       -> text "pattern synonyms cannot be promoted"
-               PatSynExPE     -> sep [ text "the existential variables of a pattern synonym"
-                                     , text "signature do not scope over the pattern" ]
                _ -> text "it is defined and used in the same recursive group"
 
 {-
@@ -2934,112 +2912,6 @@ badPatTyVarTvs sig_ty bad_tvs
 ************************************************************************
 -}
 
-
-{- Note [Free-floating kind vars]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Consider
-
-  data S a = MkS (Proxy (a :: k))
-
-According to the rules around implicitly-bound kind variables,
-that k scopes over the whole declaration. The renamer grabs
-it and adds it to the hsq_implicits field of the HsQTyVars of the
-tycon.  So we get
-   S :: forall {k}. k -> Type
-
-That's fine.  But consider this variant:
-  data T = MkT (forall (a :: k). Proxy a)
-  -- from test ghci/scripts/T7873
-
-This is not an existential datatype, but a higher-rank one (the forall
-to the right of MkT). Again, 'k' scopes over the whole declaration,
-but we do not want to get
-   T :: forall {k}. Type
-Why not? Because the kind variable isn't fixed by anything. For
-a variable like k to be implicit, it needs to be mentioned in the kind
-of a tycon tyvar. But it isn't.
-
-Rejecting T depends on whether or not the datatype has a CUSK.
-
-Non-CUSK (handled in TcTyClsDecls.kcTyClGroup (generalise)):
-   When generalising the TyCon we check that every Specified 'k'
-   appears free in the kind of the TyCon; that is, in the kind of
-   one of its Required arguments, or the result kind.
-
-CUSK (handled in TcHsType.kcLHsQTyVars, the CUSK case):
-   When we determine the tycon's final, never-to-be-changed kind
-   in kcLHsQTyVars, we check to make sure all implicitly-bound kind
-   vars are indeed mentioned in a kind somewhere. If not, error.
-
-We also perform free-floating kind var analysis for type family instances
-(see #13985). Here is an interesting example:
-
-    type family   T :: k
-    type instance T = (Nothing :: Maybe a)
-
-Upon a cursory glance, it may appear that the kind variable `a` is
-free-floating above, since there are no (visible) LHS patterns in `T`. However,
-there is an *invisible* pattern due to the return kind, so inside of GHC, the
-instance looks closer to this:
-
-    type family T @k :: k
-    type instance T @(Maybe a) = (Nothing :: Maybe a)
-
-Here, we can see that `a` really is bound by a LHS type pattern, so `a` is in
-fact not free-floating. Contrast that with this example:
-
-    type instance T = Proxy (Nothing :: Maybe a)
-
-This would looks like this inside of GHC:
-
-    type instance T @(*) = Proxy (Nothing :: Maybe a)
-
-So this time, `a` is neither bound by a visible nor invisible type pattern on
-the LHS, so it would be reported as free-floating.
-
-Finally, here's one more brain-teaser (from #9574). In the example below:
-
-    class Funct f where
-      type Codomain f :: *
-    instance Funct ('KProxy :: KProxy o) where
-      type Codomain 'KProxy = NatTr (Proxy :: o -> *)
-
-As it turns out, `o` is not free-floating in this example. That is because `o`
-bound by the kind signature of the LHS type pattern 'KProxy. To make this more
-obvious, one can also write the instance like so:
-
-    instance Funct ('KProxy :: KProxy o) where
-      type Codomain ('KProxy :: KProxy o) = NatTr (Proxy :: o -> *)
--}
-
--- See Note [Free-floating kind vars]
-reportFloatingKvs :: Name         -- of the tycon
-                  -> TyConFlavour -- What sort of TyCon it is
-                  -> [TcTyVar]    -- all tyvars, not necessarily zonked
-                  -> [TcTyVar]    -- floating tyvars
-                  -> TcM ()
-reportFloatingKvs tycon_name flav all_tvs bad_tvs
-  = unless (null bad_tvs) $  -- don't bother zonking if there's no error
-    do { all_tvs <- mapM zonkTcTyVarToTyVar all_tvs
-       ; bad_tvs <- mapM zonkTcTyVarToTyVar bad_tvs
-       ; let (tidy_env, tidy_all_tvs) = tidyOpenTyCoVars emptyTidyEnv all_tvs
-             tidy_bad_tvs             = map (tidyTyCoVarOcc tidy_env) bad_tvs
-       ; mapM_ (report tidy_all_tvs) tidy_bad_tvs }
-  where
-    report tidy_all_tvs tidy_bad_tv
-      = addErr $
-        vcat [ text "Kind variable" <+> quotes (ppr tidy_bad_tv) <+>
-               text "is implicitly bound in" <+> ppr flav
-             , quotes (ppr tycon_name) <> comma <+>
-               text "but does not appear as the kind of any"
-             , text "of its type variables. Perhaps you meant"
-             , text "to bind it explicitly somewhere?"
-             , ppWhen (not (null tidy_all_tvs)) $
-                 hang (text "Type variables with inferred kinds:")
-                 2 (ppr_tv_bndrs tidy_all_tvs) ]
-
-    ppr_tv_bndrs tvs = sep (map pp_tv tvs)
-    pp_tv tv         = parens (ppr tv <+> dcolon <+> ppr (tyVarKind tv))
 
 -- | If the inner action emits constraints, report them as errors and fail;
 -- otherwise, propagates the return value. Useful as a wrapper around

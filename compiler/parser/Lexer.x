@@ -51,13 +51,13 @@ module Lexer (
    Token(..), lexer, pragState, mkPState, mkPStatePure, PState(..),
    P(..), ParseResult(..), mkParserFlags, mkParserFlags', ParserFlags,
    getRealSrcLoc, getPState, withThisPackage,
-   failLocMsgP, failSpanMsgP, srcParseFail,
-   getMessages,
+   failLocMsgP, srcParseFail,
+   getErrorMessages, getMessages,
    popContext, pushModuleContext, setLastToken, setSrcLoc,
    activeContext, nextIsEOF,
    getLexState, popLexState, pushLexState,
    ExtBits(..), getBit,
-   addWarning, addError,
+   addWarning, addError, addFatalError,
    lexTokenStream,
    addAnnotation,AddAnn,addAnnsAt,mkParensApiAnn,
    commentToAnnotation
@@ -977,7 +977,7 @@ hopefully_open_brace span buf len
                  Layout prev_off _ : _ -> prev_off < offset
                  _                     -> True
       if isOK then pop_and open_brace span buf len
-              else failSpanMsgP (RealSrcSpan span) (text "Missing block")
+              else addFatalError (RealSrcSpan span) (text "Missing block")
 
 pop_and :: Action -> Action
 pop_and act span buf len = do _ <- popLexState
@@ -1312,9 +1312,11 @@ varid span buf len =
       keyword <- case lastTk of
         Just ITlam -> do
           lambdaCase <- getBit LambdaCaseBit
-          if lambdaCase
-            then return ITlcase
-            else failMsgP "Illegal lambda-case (use -XLambdaCase)"
+          unless lambdaCase $ do
+            pState <- getPState
+            addError (RealSrcSpan (last_loc pState)) $ text
+                     "Illegal lambda-case (use LambdaCase)"
+          return ITlcase
         _ -> return ITcase
       maybe_layout keyword
       return $ L span keyword
@@ -1379,9 +1381,11 @@ tok_integral :: (SourceText -> Integer -> Token)
 tok_integral itint transint transbuf translen (radix,char_to_int) span buf len = do
   numericUnderscores <- getBit NumericUnderscoresBit  -- #14473
   let src = lexemeToString buf len
-  if (not numericUnderscores) && ('_' `elem` src)
-    then failMsgP "Use NumericUnderscores to allow underscores in integer literals"
-    else return $ L span $ itint (SourceText src)
+  when ((not numericUnderscores) && ('_' `elem` src)) $ do
+    pState <- getPState
+    addError (RealSrcSpan (last_loc pState)) $ text
+             "Use NumericUnderscores to allow underscores in integer literals"
+  return $ L span $ itint (SourceText src)
        $! transint $ parseUnsignedInteger
        (offsetBytes transbuf buf) (subtract translen len) radix char_to_int
 
@@ -1419,9 +1423,11 @@ tok_frac :: Int -> (String -> Token) -> Action
 tok_frac drop f span buf len = do
   numericUnderscores <- getBit NumericUnderscoresBit  -- #14473
   let src = lexemeToString buf (len-drop)
-  if (not numericUnderscores) && ('_' `elem` src)
-    then failMsgP "Use NumericUnderscores to allow underscores in floating literals"
-    else return (L span $! (f $! src))
+  when ((not numericUnderscores) && ('_' `elem` src)) $ do
+    pState <- getPState
+    addError (RealSrcSpan (last_loc pState)) $ text
+             "Use NumericUnderscores to allow underscores in floating literals"
+  return (L span $! (f $! src))
 
 tok_float, tok_primfloat, tok_primdouble :: String -> Token
 tok_float        str = ITrational   $! readFractionalLit str
@@ -1618,23 +1624,23 @@ lex_string s = do
 
     Just ('"',i)  -> do
         setInput i
+        let s' = reverse s
         magicHash <- getBit MagicHashBit
         if magicHash
           then do
             i <- getInput
             case alexGetChar' i of
               Just ('#',i) -> do
-                   setInput i
-                   if any (> '\xFF') s
-                    then failMsgP "primitive string literal must contain only characters <= \'\\xFF\'"
-                    else let bs = unsafeMkByteString (reverse s)
-                         in return (ITprimstring (SourceText (reverse s)) bs)
+                setInput i
+                when (any (> '\xFF') s') $ do
+                  pState <- getPState
+                  addError (RealSrcSpan (last_loc pState)) $ text
+                     "primitive string literal must contain only characters <= \'\\xFF\'"
+                return (ITprimstring (SourceText s') (unsafeMkByteString s'))
               _other ->
-                return (ITstring (SourceText (reverse s))
-                                 (mkFastString (reverse s)))
+                return (ITstring (SourceText s') (mkFastString s'))
           else
-                return (ITstring (SourceText (reverse s))
-                                 (mkFastString (reverse s)))
+                return (ITstring (SourceText s') (mkFastString s'))
 
     Just ('\\',i)
         | Just ('&',i) <- next -> do
@@ -1923,17 +1929,18 @@ data LayoutContext
   | Layout !Int !GenSemic
   deriving Show
 
+-- | The result of running a parser.
 data ParseResult a
-  = POk PState a
-  | PFailed
-        (DynFlags -> Messages) -- A function that returns warnings that
-                               -- accumulated during parsing, including
-                               -- the warnings related to tabs.
-        SrcSpan                -- The start and end of the text span related
-                               -- to the error.  Might be used in environments
-                               -- which can show this span, e.g. by
-                               -- highlighting it.
-        MsgDoc                 -- The error message
+  = POk      -- ^ The parser has consumed a (possibly empty) prefix
+             --   of the input and produced a result. Use 'getMessages'
+             --   to check for accumulated warnings and non-fatal errors.
+      PState -- ^ The resulting parsing state. Can be used to resume parsing.
+      a      -- ^ The resulting value.
+  | PFailed  -- ^ The parser has consumed a (possibly empty) prefix
+             --   of the input and failed.
+      PState -- ^ The parsing state right before failure, including the fatal
+             --   parse error. 'getMessages' and 'getErrorMessages' must return
+             --   a non-empty bag of errors.
 
 -- | Test whether a 'WarningFlag' is set
 warnopt :: WarningFlag -> ParserFlags -> Bool
@@ -2003,6 +2010,7 @@ data ALRLayout = ALRLayoutLet
                | ALRLayoutOf
                | ALRLayoutDo
 
+-- | The parsing monad, isomorphic to @StateT PState Maybe@.
 newtype P a = P { unP :: PState -> ParseResult a }
 
 instance Functor P where
@@ -2019,7 +2027,7 @@ instance Monad P where
 #endif
 
 instance MonadFail.MonadFail P where
-  fail = failP
+  fail = failMsgP
 
 returnP :: a -> P a
 returnP a = a `seq` (P $ \s -> POk s a)
@@ -2028,27 +2036,16 @@ thenP :: P a -> (a -> P b) -> P b
 (P m) `thenP` k = P $ \ s ->
         case m s of
                 POk s1 a         -> (unP (k a)) s1
-                PFailed warnFn span err -> PFailed warnFn span err
-
-failP :: String -> P a
-failP msg =
-  P $ \s ->
-    PFailed (getMessages s) (RealSrcSpan (last_loc s)) (text msg)
+                PFailed s1 -> PFailed s1
 
 failMsgP :: String -> P a
-failMsgP msg =
-  P $ \s ->
-    PFailed (getMessages s) (RealSrcSpan (last_loc s)) (text msg)
+failMsgP msg = do
+  pState <- getPState
+  addFatalError (RealSrcSpan (last_loc pState)) (text msg)
 
 failLocMsgP :: RealSrcLoc -> RealSrcLoc -> String -> P a
 failLocMsgP loc1 loc2 str =
-  P $ \s ->
-    PFailed (getMessages s) (RealSrcSpan (mkRealSrcSpan loc1 loc2)) (text str)
-
-failSpanMsgP :: SrcSpan -> SDoc -> P a
-failSpanMsgP span msg =
-  P $ \s ->
-    PFailed (getMessages s) span msg
+  addFatalError (RealSrcSpan (mkRealSrcSpan loc1 loc2)) (text str)
 
 getPState :: P PState
 getPState = P $ \s -> POk s s
@@ -2477,6 +2474,18 @@ mkPStatePure options buf loc =
       annotations_comments = []
     }
 
+-- | Add a non-fatal error. Use this when the parser can produce a result
+--   despite the error.
+--
+--   For example, when GHC encounters a @forall@ in a type,
+--   but @-XExplicitForAll@ is disabled, the parser constructs @ForAllTy@
+--   as if @-XExplicitForAll@ was enabled, adding a non-fatal error to
+--   the accumulator.
+--
+--   Control flow wise, non-fatal errors act like warnings: they are added
+--   to the accumulator and parsing continues. This allows GHC to report
+--   more than one parse error per file.
+--
 addError :: SrcSpan -> SDoc -> P ()
 addError srcspan msg
  = P $ \s@PState{messages=m} ->
@@ -2488,6 +2497,14 @@ addError srcspan msg
                in (ws, es')
        in POk s{messages=m'} ()
 
+-- | Add a fatal error. This will be the last error reported by the parser, and
+--   the parser will not produce any result, ending in a 'PFailed' state.
+addFatalError :: SrcSpan -> SDoc -> P a
+addFatalError span msg =
+  addError span msg >> P PFailed
+
+-- | Add a warning to the accumulator.
+--   Use 'getMessages' to get the accumulated warnings.
 addWarning :: WarningFlag -> SrcSpan -> SDoc -> P ()
 addWarning option srcspan warning
  = P $ \s@PState{messages=m, options=o} ->
@@ -2522,6 +2539,14 @@ mkTabWarning PState{tab_first=tf, tab_count=tc} d =
   in fmap (\s -> makeIntoWarning (Reason Opt_WarnTabs) $
                  mkWarnMsg d (RealSrcSpan s) alwaysQualify message) tf
 
+-- | Get a bag of the errors that have been accumulated so far.
+--   Does not take -Werror into account.
+getErrorMessages :: PState -> DynFlags -> ErrorMessages
+getErrorMessages PState{messages=m} d =
+  let (_, es) = m d in es
+
+-- | Get the warnings and errors accumulated so far.
+--   Does not take -Werror into account.
 getMessages :: PState -> DynFlags -> Messages
 getMessages p@PState{messages=m} d =
   let (ws, es) = m d
@@ -2542,7 +2567,7 @@ popContext = P $ \ s@(PState{ buffer = buf, options = o, context = ctx,
         (_:tl) ->
           POk s{ context = tl } ()
         []     ->
-          PFailed (getMessages s) (RealSrcSpan last_loc) (srcParseErr o buf len)
+          unP (addFatalError (RealSrcSpan last_loc) (srcParseErr o buf len)) s
 
 -- Push a new layout context at the indentation of the last token read.
 pushCurrentContext :: GenSemic -> P ()
@@ -2602,7 +2627,7 @@ srcParseErr options buf len
 srcParseFail :: P a
 srcParseFail = P $ \s@PState{ buffer = buf, options = o, last_len = len,
                             last_loc = last_loc } ->
-    PFailed (getMessages s) (RealSrcSpan last_loc) (srcParseErr o buf len)
+    unP (addFatalError (RealSrcSpan last_loc) (srcParseErr o buf len)) s
 
 -- A lexical error is reported at a particular position in the source file,
 -- not over a token range.

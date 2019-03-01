@@ -22,6 +22,7 @@ import Target
 import Utilities
 
 import Data.List (union)
+import qualified Data.Set    as Set
 import qualified Text.Parsec as Parsec
 
 docRoot :: FilePath
@@ -79,10 +80,35 @@ documentationRules = do
     -- Haddock's manual, and builds man pages
     "docs" ~> do
         root <- buildRoot
+        doctargets <- ghcDocs =<< flavour
         let html     = htmlRoot -/- "index.html" -- also implies "docs-haddock"
             archives = map pathArchive docPaths
             pdfs     = map pathPdf $ docPaths \\ ["libraries"]
-        need $ map (root -/-) $ [html] ++ archives ++ pdfs ++ [manPageBuildPath]
+
+            targets = -- include PDFs unless --docs=no-sphinx[-pdf] is
+                      -- passed.
+                      concat [ pdfs | SphinxPDFs `Set.member` doctargets ]
+
+                      -- include manpage unless --docs=no-sphinx[-man] is given.
+                   ++ [ manPageBuildPath | SphinxMan `Set.member` doctargets ]
+
+                      -- include toplevel html target uness we neither want
+                      -- haddocks nor html pages produced by sphinx.
+                   ++ [ html | Set.size (doctargets `Set.intersection`
+                                         Set.fromList [Haddocks, SphinxHTML]
+                                        ) > 0 ]
+
+                      -- include archives for whatever targets remain from
+                      -- the --docs arguments we got.
+                   ++ [ ar
+                      | (ar, doc) <- zip archives docPaths
+                      , archiveTarget doc `Set.member` doctargets ]
+
+        need $ map (root -/-) targets
+
+    where archiveTarget "libraries"   = Haddocks
+          archiveTarget _             = SphinxHTML
+
 
 ------------------------------------- HTML -------------------------------------
 
@@ -94,7 +120,16 @@ buildHtmlDocumentation = do
     root <- buildRootRules
 
     root -/- htmlRoot -/- "index.html" %> \file -> do
-        need $ map ((root -/-) . pathIndex) docPaths
+        doctargets <- ghcDocs =<< flavour
+
+        -- We include the HTML output of haddock for libraries unless
+        -- told not to (e.g with --docs=no-haddocks). Likewise for
+        -- the HTML version of the users guide or the Haddock manual.
+        let targets = [ "libraries" | Haddocks `Set.member` doctargets ]
+                   ++ concat [ ["users_guide", "Haddock"]
+                             | SphinxHTML `Set.member` doctargets ]
+        need $ map ((root -/-) . pathIndex) targets
+
         copyFileUntracked "docs/index.html" file
 
 -- | Compile a Sphinx ReStructured Text package to HTML.
@@ -141,7 +176,7 @@ buildPackageDocumentation = do
 
     -- Per-package haddocks
     root -/- htmlRoot -/- "libraries/*/haddock-prologue.txt" %> \file -> do
-        ctx <- getPkgDocTarget root file >>= pkgDocContext
+        ctx <- pkgDocContext <$> getPkgDocTarget root file
         -- This is how @ghc-cabal@ used to produces "haddock-prologue.txt" files.
         syn  <- pkgSynopsis    (Context.package ctx)
         desc <- pkgDescription (Context.package ctx)
@@ -149,7 +184,7 @@ buildPackageDocumentation = do
         liftIO $ writeFile file prologue
 
     root -/- htmlRoot -/- "libraries/*/*.haddock" %> \file -> do
-        context <- getPkgDocTarget root file >>= pkgDocContext
+        context <- pkgDocContext <$> getPkgDocTarget root file
         need [ takeDirectory file  -/- "haddock-prologue.txt"]
         haddocks <- haddockDependencies context
 
@@ -172,14 +207,11 @@ buildPackageDocumentation = do
 data PkgDocTarget = DotHaddock PackageName | HaddockPrologue PackageName
   deriving (Eq, Show)
 
-pkgDocContext :: PkgDocTarget -> Action Context
-pkgDocContext target = case findPackageByName pkgname of
-  Nothing -> error $ "pkgDocContext: couldn't find package " ++ pkgname
-  Just p  -> return (Context Stage1 p vanilla)
-
-  where pkgname = case target of
-          DotHaddock n      -> n
-          HaddockPrologue n -> n
+pkgDocContext :: PkgDocTarget -> Context
+pkgDocContext target = Context Stage1 (unsafeFindPackageByName name) vanilla
+  where
+    name = case target of DotHaddock n      -> n
+                          HaddockPrologue n -> n
 
 parsePkgDocTarget :: FilePath -> Parsec.Parsec String () PkgDocTarget
 parsePkgDocTarget root = do

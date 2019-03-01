@@ -23,13 +23,17 @@ from testutil import passed, failBecause
 
 # Check if "git rev-parse" can be run successfully.
 # True implies the current directory is a git repo.
+_inside_git_repo_cache = None
 def inside_git_repo():
-    try:
-        subprocess.check_call(['git', 'rev-parse', 'HEAD'],
-                              stdout=subprocess.DEVNULL)
-        return True
-    except subprocess.CalledProcessError:
-        return False
+    global _inside_git_repo_cache
+    if _inside_git_repo_cache == None:
+        try:
+            subprocess.check_call(['git', 'rev-parse', 'HEAD'],
+                                stdout=subprocess.DEVNULL)
+            _inside_git_repo_cache = True
+        except subprocess.CalledProcessError:
+            _inside_git_repo_cache = False
+    return _inside_git_repo_cache
 
 # Check if the worktree is dirty.
 def is_worktree_dirty():
@@ -136,7 +140,7 @@ def parse_allowed_perf_changes(commitMsg):
     matches = re.findall(exp, commitMsg, re.M)
     changes = {}
     for (direction, metrics_str, opts_str, tests_str) in matches:
-        tests = re.findall(r"(\w+)", tests_str)
+        tests = tests_str.split()
         for test in tests:
             changes.setdefault(test, []).append({
                 'direction': direction,

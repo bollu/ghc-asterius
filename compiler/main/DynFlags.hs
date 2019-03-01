@@ -3990,7 +3990,8 @@ wWarningFlagsDeps = [
   flagSpec "hi-shadowing"                Opt_WarnHiShadows,
   flagSpec "inaccessible-code"           Opt_WarnInaccessibleCode,
   flagSpec "implicit-prelude"            Opt_WarnImplicitPrelude,
-  flagSpec "implicit-kind-vars"          Opt_WarnImplicitKindVars,
+  depFlagSpec "implicit-kind-vars"       Opt_WarnImplicitKindVars
+    "it is now an error",
   flagSpec "incomplete-patterns"         Opt_WarnIncompletePatterns,
   flagSpec "incomplete-record-updates"   Opt_WarnIncompletePatternsRecUpd,
   flagSpec "incomplete-uni-patterns"     Opt_WarnIncompleteUniPatterns,
@@ -4288,6 +4289,14 @@ supportedExtensions :: [String]
 supportedExtensions = concatMap toFlagSpecNamePair xFlags
   where
     toFlagSpecNamePair flg
+#if !defined(GHCI)
+      -- IMPORTANT! Make sure that `ghc --supported-extensions` omits
+      -- "TemplateHaskell"/"QuasiQuotes" when it's known not to work out of the
+      -- box. See also GHC #11102 and #16331 for more details about
+      -- the rationale
+      | flagSpecFlag flg == LangExt.TemplateHaskell  = [noName]
+      | flagSpecFlag flg == LangExt.QuasiQuotes      = [noName]
+#endif
       | otherwise = [name, noName]
       where
         noName = "No" ++ name
@@ -4820,7 +4829,6 @@ minusWcompatOpts
     = [ Opt_WarnMissingMonadFailInstances
       , Opt_WarnSemigroup
       , Opt_WarnNonCanonicalMonoidInstances
-      , Opt_WarnImplicitKindVars
       , Opt_WarnStarIsType
       ]
 

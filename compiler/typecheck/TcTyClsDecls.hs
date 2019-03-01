@@ -40,7 +40,7 @@ import TcDeriv (DerivInfo)
 import TcHsType
 import ClsInst( AssocInstInfo(..) )
 import TcMType
-import TysWiredIn ( unitTy )
+import TysWiredIn ( unitTy, makeRecoveryTyCon )
 import TcType
 import RnEnv( lookupConstructorFields )
 import FamInst
@@ -537,10 +537,8 @@ generaliseTcTyCon tc
   = setSrcSpan (getSrcSpan tc) $
     addTyConCtxt tc $
     do { let tc_name     = tyConName tc
-             tc_flav     = tyConFlavour tc
              tc_res_kind = tyConResKind tc
              tc_tvs      = tyConTyVars  tc
-             user_tyvars = tcTyConUserTyVars tc  -- ToDo: nuke
 
              (scoped_tv_names, scoped_tvs) = unzip (tcTyConScopedTyVars tc)
              -- NB: scoped_tvs includes both specified and required (tc_tvs)
@@ -596,7 +594,7 @@ generaliseTcTyCon tc
              scoped_tv_pairs = scoped_tv_names `zip` scoped_tvs
 
        -- Step 7: Make the result TcTyCon
-             tycon = mkTcTyCon tc_name user_tyvars final_tcbs tc_res_kind
+             tycon = mkTcTyCon tc_name final_tcbs tc_res_kind
                             scoped_tv_pairs
                             True {- it's generalised now -}
                             (tyConFlavour tc)
@@ -611,21 +609,13 @@ generaliseTcTyCon tc
               , text "required_tcbs =" <+> ppr required_tcbs
               , text "final_tcbs =" <+> ppr final_tcbs ]
 
-       -- Step 8: check for floating kind vars
-       -- See Note [Free-floating kind vars]
-       -- They are easily identified by the fact that they
-       -- have not been skolemised by quantifyTyVars
-       ; let floating_specified = filter isTyVarTyVar scoped_tvs
-       ; reportFloatingKvs tc_name tc_flav
-                           scoped_tvs floating_specified
-
-       -- Step 9: Check for duplicates
+       -- Step 8: Check for duplicates
        -- E.g. data SameKind (a::k) (b::k)
        --      data T (a::k1) (b::k2) = MkT (SameKind a b)
        -- Here k1 and k2 start as TyVarTvs, and get unified with each other
        ; mapM_ report_sig_tv_err (findDupTyVarTvs scoped_tv_pairs)
 
-       -- Step 10: Check for validity.
+       -- Step 9: Check for validity.
        -- We do this here because we're about to put the tycon into
        -- the environment, and we don't want anything malformed in the
        -- environment.
@@ -1497,7 +1487,6 @@ tcFamDecl1 :: Maybe Class -> FamilyDecl GhcRn -> TcM TyCon
 tcFamDecl1 parent (FamilyDecl { fdInfo = fam_info
                               , fdLName = tc_lname@(dL->L _ tc_name)
                               , fdResultSig = (dL->L _ sig)
-                              , fdTyVars = user_tyvars
                               , fdInjectivityAnn = inj })
   | DataFamily <- fam_info
   = bindTyClTyVars tc_name $ \ binders res_kind -> do
@@ -1559,7 +1548,7 @@ tcFamDecl1 parent (FamilyDecl { fdInfo = fam_info
            Just eqns -> do {
 
          -- Process the equations, creating CoAxBranches
-       ; let tc_fam_tc = mkTcTyCon tc_name (ppr user_tyvars) binders res_kind
+       ; let tc_fam_tc = mkTcTyCon tc_name binders res_kind
                                    [] False {- this doesn't matter here -}
                                    ClosedTypeFamilyFlavour
 
@@ -2149,8 +2138,8 @@ tcConDecl rep_tycon tag_map tmpl_bndrs res_tmpl
 
        ; kvs <- kindGeneralize (mkSpecForAllTys (binderVars tmpl_bndrs) $
                                 mkSpecForAllTys exp_tvs $
-                                mkFunTys ctxt $
-                                mkFunTys arg_tys $
+                                mkPhiTy ctxt $
+                                mkVisFunTys arg_tys $
                                 unitTy)
                  -- That type is a lie, of course. (It shouldn't end in ()!)
                  -- And we could construct a proper result type from the info
@@ -2224,8 +2213,8 @@ tcConDecl rep_tycon tag_map tmpl_bndrs res_tmpl
        ; let user_tvs = imp_tvs ++ exp_tvs
 
        ; tkvs <- kindGeneralize (mkSpecForAllTys user_tvs $
-                                 mkFunTys ctxt $
-                                 mkFunTys arg_tys $
+                                 mkPhiTy ctxt $
+                                 mkVisFunTys arg_tys $
                                  res_ty)
 
              -- Zonk to Types
@@ -2729,12 +2718,12 @@ checkValidTyCl :: TyCon -> TcM [TyCon]
 -- See Note [Recover from validity error]
 checkValidTyCl tc
   = setSrcSpan (getSrcSpan tc) $
-    addTyConCtxt tc $
-    recoverM recovery_code
-             (do { traceTc "Starting validity for tycon" (ppr tc)
-                 ; checkValidTyCon tc
-                 ; traceTc "Done validity for tycon" (ppr tc)
-                 ; return [tc] })
+    addTyConCtxt tc            $
+    recoverM recovery_code     $
+    do { traceTc "Starting validity for tycon" (ppr tc)
+       ; checkValidTyCon tc
+       ; traceTc "Done validity for tycon" (ppr tc)
+       ; return [tc] }
   where
     recovery_code -- See Note [Recover from validity error]
       = do { traceTc "Aborted validity for tycon" (ppr tc)
@@ -3547,7 +3536,7 @@ checkValidRoles tc
       =  check_ty_roles env role    ty1
       >> check_ty_roles env Nominal ty2
 
-    check_ty_roles env role (FunTy ty1 ty2)
+    check_ty_roles env role (FunTy _ ty1 ty2)
       =  check_ty_roles env role ty1
       >> check_ty_roles env role ty2
 
@@ -3711,7 +3700,7 @@ badDataConTyCon data_con res_ty_tmpl actual_res_ty
     (actual_res_tvs, actual_res_theta, actual_res_rho)
       = tcSplitNestedSigmaTys actual_res_ty
     suggested_ty = mkSpecForAllTys (actual_ex_tvs ++ actual_res_tvs) $
-                   mkFunTys (actual_theta ++ actual_res_theta)
+                   mkPhiTy (actual_theta ++ actual_res_theta)
                    actual_res_rho
 
 badGadtDecl :: Name -> SDoc

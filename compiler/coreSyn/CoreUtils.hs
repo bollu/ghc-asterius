@@ -1360,6 +1360,7 @@ isExpandableApp fn n_val_args
   | otherwise
   = case idDetails fn of
       DataConWorkId {} -> True  -- Actually handled by isWorkFreeApp
+      DataConWrapId {} -> True  -- See Note [Special case for newtype wrappers]
       RecSelId {}      -> n_val_args == 1  -- See Note [Record selection]
       ClassOpId {}     -> n_val_args == 1
       PrimOpId {}      -> False
@@ -1379,9 +1380,10 @@ isExpandableApp fn n_val_args
        = True
 
        | Just (bndr, ty) <- splitPiTy_maybe ty
-       = caseBinder bndr
-           (\_tv -> all_pred_args n_val_args ty)
-           (\bndr_ty -> isPredTy bndr_ty && all_pred_args (n_val_args-1) ty)
+       = case bndr of
+           Named {}        -> all_pred_args n_val_args ty
+           Anon InvisArg _ -> all_pred_args (n_val_args-1) ty
+           Anon VisArg _   -> False
 
        | otherwise
        = False
@@ -1577,7 +1579,7 @@ app_ok primop_ok fun args
 
     primop_arg_ok :: TyBinder -> CoreExpr -> Bool
     primop_arg_ok (Named _) _ = True   -- A type argument
-    primop_arg_ok (Anon ty) arg        -- A term argument
+    primop_arg_ok (Anon _ ty) arg      -- A term argument
        | isUnliftedType ty = expr_ok primop_ok arg
        | otherwise         = True  -- See Note [Primops with lifted arguments]
 

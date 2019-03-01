@@ -456,13 +456,62 @@ forAllAllowed ArbitraryRank             = True
 forAllAllowed (LimitedRank forall_ok _) = forall_ok
 forAllAllowed _                         = False
 
-constraintsAllowed :: UserTypeCtxt -> Bool
--- We don't allow constraints in kinds
-constraintsAllowed (TyVarBndrKindCtxt {}) = False
-constraintsAllowed (DataKindCtxt {})      = False
-constraintsAllowed (TySynKindCtxt {})     = False
-constraintsAllowed (TyFamResKindCtxt {})  = False
-constraintsAllowed _ = True
+allConstraintsAllowed :: UserTypeCtxt -> Bool
+-- We don't allow arbitrary constraints in kinds
+allConstraintsAllowed (TyVarBndrKindCtxt {}) = False
+allConstraintsAllowed (DataKindCtxt {})      = False
+allConstraintsAllowed (TySynKindCtxt {})     = False
+allConstraintsAllowed (TyFamResKindCtxt {})  = False
+allConstraintsAllowed _ = True
+
+-- | Returns 'True' if the supplied 'UserTypeCtxt' is unambiguously not the
+-- context for the type of a term, where visible, dependent quantification is
+-- currently disallowed.
+--
+-- An example of something that is unambiguously the type of a term is the
+-- @forall a -> a -> a@ in @foo :: forall a -> a -> a@. On the other hand, the
+-- same type in @type family Foo :: forall a -> a -> a@ is unambiguously the
+-- kind of a type, not the type of a term, so it is permitted.
+--
+-- For more examples, see
+-- @testsuite/tests/dependent/should_compile/T16326_Compile*.hs@ (for places
+-- where VDQ is permitted) and
+-- @testsuite/tests/dependent/should_fail/T16326_Fail*.hs@ (for places where
+-- VDQ is disallowed).
+vdqAllowed :: UserTypeCtxt -> Bool
+-- Currently allowed in the kinds of types...
+vdqAllowed (KindSigCtxt {}) = True
+vdqAllowed (TySynCtxt {}) = True
+vdqAllowed (ThBrackCtxt {}) = True
+vdqAllowed (GhciCtxt {}) = True
+vdqAllowed (TyVarBndrKindCtxt {}) = True
+vdqAllowed (DataKindCtxt {}) = True
+vdqAllowed (TySynKindCtxt {}) = True
+vdqAllowed (TyFamResKindCtxt {}) = True
+-- ...but not in the types of terms.
+vdqAllowed (ConArgCtxt {}) = False
+  -- We could envision allowing VDQ in data constructor types so long as the
+  -- constructor is only ever used at the type level, but for now, GHC adopts
+  -- the stance that VDQ is never allowed in data constructor types.
+vdqAllowed (FunSigCtxt {}) = False
+vdqAllowed (InfSigCtxt {}) = False
+vdqAllowed (ExprSigCtxt {}) = False
+vdqAllowed (TypeAppCtxt {}) = False
+vdqAllowed (PatSynCtxt {}) = False
+vdqAllowed (PatSigCtxt {}) = False
+vdqAllowed (RuleSigCtxt {}) = False
+vdqAllowed (ResSigCtxt {}) = False
+vdqAllowed (ForSigCtxt {}) = False
+vdqAllowed (DefaultDeclCtxt {}) = False
+-- We count class constraints as "types of terms". All of the cases below deal
+-- with class constraints.
+vdqAllowed (InstDeclCtxt {}) = False
+vdqAllowed (SpecInstCtxt {}) = False
+vdqAllowed (GenSigCtxt {}) = False
+vdqAllowed (ClassSCCtxt {}) = False
+vdqAllowed (SigmaCtxt {}) = False
+vdqAllowed (DataTyCtxt {}) = False
+vdqAllowed (DerivClauseCtxt {}) = False
 
 {-
 Note [Correctness and performance of type synonym validity checking]
@@ -623,10 +672,15 @@ check_type ve@(ValidityEnv{ ve_tidy_env = env, ve_ctxt = ctxt
                 -- Reject e.g. (Maybe (?x::Int => Int)),
                 -- with a decent error message
 
-        ; checkTcM (null theta || constraintsAllowed ctxt)
-                   (constraintTyErr env ty)
+        ; checkConstraintsOK ve theta ty
                 -- Reject forall (a :: Eq b => b). blah
                 -- In a kind signature we don't allow constraints
+
+        ; checkTcM (all (isInvisibleArgFlag . binderArgFlag) tvbs
+                         || vdqAllowed ctxt)
+                   (illegalVDQTyErr env ty)
+                -- Reject visible, dependent quantification in the type of a
+                -- term (e.g., `f :: forall a -> a -> Maybe a`)
 
         ; check_valid_theta env' SigmaCtxt expand theta
                 -- Allow     type T = ?x::Int => Int -> Int
@@ -650,7 +704,7 @@ check_type ve@(ValidityEnv{ ve_tidy_env = env, ve_ctxt = ctxt
              | otherwise  = liftedTypeKind
         -- If there are any constraints, the kind is *. (#11405)
 
-check_type (ve@ValidityEnv{ve_rank = rank}) (FunTy arg_ty res_ty)
+check_type (ve@ValidityEnv{ve_rank = rank}) (FunTy _ arg_ty res_ty)
   = do  { check_type (ve{ve_rank = arg_rank}) arg_ty
         ; check_type (ve{ve_rank = res_rank}) res_ty }
   where
@@ -698,11 +752,12 @@ check_syn_tc_app (ve@ValidityEnv{ ve_ctxt = ctxt, ve_expand = expand })
 
     check_args_only, check_expansion_only :: ExpandMode -> TcM ()
     check_args_only expand = mapM_ (check_arg expand) tys
-    check_expansion_only expand =
-      case tcView ty of
-         Just ty' -> let syn_tc = fst $ tcRepSplitTyConApp ty
-                         err_ctxt = text "In the expansion of type synonym"
-                                    <+> quotes (ppr syn_tc)
+
+    check_expansion_only expand
+      = ASSERT2( isTypeSynonymTyCon tc, ppr tc )
+        case tcView ty of
+         Just ty' -> let err_ctxt = text "In the expansion of type synonym"
+                                    <+> quotes (ppr tc)
                      in addErrCtxt err_ctxt $
                         check_type (ve{ve_expand = expand}) ty'
          Nothing  -> pprPanic "check_syn_tc_app" (ppr ty)
@@ -836,9 +891,28 @@ ubxArgTyErr env ty
                       , ppr_tidy env ty ]
                 , text "Perhaps you intended to use UnboxedTuples" ] )
 
+checkConstraintsOK :: ValidityEnv -> ThetaType -> Type -> TcM ()
+checkConstraintsOK ve theta ty
+  | null theta                         = return ()
+  | allConstraintsAllowed (ve_ctxt ve) = return ()
+  | otherwise
+  = -- We are in a kind, where we allow only equality predicates
+    -- See Note [Constraints in kinds] in TyCoRep, and Trac #16263
+    checkTcM (all isEqPred theta) $
+    constraintTyErr (ve_tidy_env ve) ty
+
 constraintTyErr :: TidyEnv -> Type -> (TidyEnv, SDoc)
 constraintTyErr env ty
   = (env, text "Illegal constraint in a kind:" <+> ppr_tidy env ty)
+
+-- | Reject a use of visible, dependent quantification in the type of a term.
+illegalVDQTyErr :: TidyEnv -> Type -> (TidyEnv, SDoc)
+illegalVDQTyErr env ty =
+  (env, vcat
+  [ hang (text "Illegal visible, dependent quantification" <+>
+          text "in the type of a term:")
+       2 (ppr_tidy env ty)
+  , text "(GHC does not yet support this)" ] )
 
 {-
 Note [Liberal type synonyms]
@@ -1099,8 +1173,8 @@ solved to add+canonicalise another (Foo a) constraint.  -}
 check_class_pred :: TidyEnv -> DynFlags -> UserTypeCtxt
                  -> PredType -> Class -> [TcType] -> TcM ()
 check_class_pred env dflags ctxt pred cls tys
-  |  cls `hasKey` heqTyConKey   -- (~) and (~~) are classified as classes,
-  || cls `hasKey` eqTyConKey    -- but here we want to treat them as equalities
+  |  isEqPredClass cls    -- (~) and (~~) are classified as classes,
+                          -- but here we want to treat them as equalities
   = -- pprTrace "check_class" (ppr cls) $
     check_eq_pred env dflags pred
 
@@ -1543,12 +1617,12 @@ dropCasts :: Type -> Type
 -- This function can turn a well-kinded type into an ill-kinded
 -- one, so I've kept it local to this module
 -- To consider: drop only HoleCo casts
-dropCasts (CastTy ty _)     = dropCasts ty
-dropCasts (AppTy t1 t2)     = mkAppTy (dropCasts t1) (dropCasts t2)
-dropCasts (FunTy t1 t2)     = mkFunTy (dropCasts t1) (dropCasts t2)
-dropCasts (TyConApp tc tys) = mkTyConApp tc (map dropCasts tys)
-dropCasts (ForAllTy b ty)   = ForAllTy (dropCastsB b) (dropCasts ty)
-dropCasts ty                = ty  -- LitTy, TyVarTy, CoercionTy
+dropCasts (CastTy ty _)       = dropCasts ty
+dropCasts (AppTy t1 t2)       = mkAppTy (dropCasts t1) (dropCasts t2)
+dropCasts ty@(FunTy _ t1 t2)  = ty { ft_arg = dropCasts t1, ft_res = dropCasts t2 }
+dropCasts (TyConApp tc tys)   = mkTyConApp tc (map dropCasts tys)
+dropCasts (ForAllTy b ty)     = ForAllTy (dropCastsB b) (dropCasts ty)
+dropCasts ty                  = ty  -- LitTy, TyVarTy, CoercionTy
 
 dropCastsB :: TyVarBinder -> TyVarBinder
 dropCastsB b = b   -- Don't bother in the kind of a forall
@@ -2579,7 +2653,7 @@ fvType (TyVarTy tv)          = [tv]
 fvType (TyConApp _ tys)      = fvTypes tys
 fvType (LitTy {})            = []
 fvType (AppTy fun arg)       = fvType fun ++ fvType arg
-fvType (FunTy arg res)       = fvType arg ++ fvType res
+fvType (FunTy _ arg res)     = fvType arg ++ fvType res
 fvType (ForAllTy (Bndr tv _) ty)
   = fvType (tyVarKind tv) ++
     filter (/= tv) (fvType ty)
@@ -2596,7 +2670,7 @@ sizeType (TyVarTy {})      = 1
 sizeType (TyConApp tc tys) = 1 + sizeTyConAppArgs tc tys
 sizeType (LitTy {})        = 1
 sizeType (AppTy fun arg)   = sizeType fun + sizeType arg
-sizeType (FunTy arg res)   = sizeType arg + sizeType res + 1
+sizeType (FunTy _ arg res) = sizeType arg + sizeType res + 1
 sizeType (ForAllTy _ ty)   = sizeType ty
 sizeType (CastTy ty _)     = sizeType ty
 sizeType (CoercionTy _)    = 0
@@ -2635,10 +2709,9 @@ isTerminatingClass cls
   = isIPClass cls    -- Implicit parameter constraints always terminate because
                      -- there are no instances for them --- they are only solved
                      -- by "local instances" in expressions
+    || isEqPredClass cls
     || cls `hasKey` typeableClassKey
     || cls `hasKey` coercibleTyConKey
-    || cls `hasKey` eqTyConKey
-    || cls `hasKey` heqTyConKey
 
 -- | Tidy before printing a type
 ppr_tidy :: TidyEnv -> Type -> SDoc

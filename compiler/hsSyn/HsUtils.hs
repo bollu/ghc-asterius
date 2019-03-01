@@ -28,6 +28,7 @@ module HsUtils(
   mkHsDictLet, mkHsLams,
   mkHsOpApp, mkHsDo, mkHsComp, mkHsWrapPat, mkHsWrapPatCo,
   mkLHsPar, mkHsCmdWrap, mkLHsCmdWrap,
+  mkHsCmdIf,
 
   nlHsTyApp, nlHsTyApps, nlHsVar, nlHsDataCon,
   nlHsLit, nlHsApp, nlHsApps, nlHsSyntaxApps,
@@ -274,6 +275,10 @@ mkHsComp ctxt stmts expr = mkHsDo ctxt (stmts ++ [last_stmt])
 mkHsIf :: LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> LHsExpr (GhcPass p)
        -> HsExpr (GhcPass p)
 mkHsIf c a b = HsIf noExt (Just noSyntaxExpr) c a b
+
+mkHsCmdIf :: LHsExpr (GhcPass p) -> LHsCmd (GhcPass p) -> LHsCmd (GhcPass p)
+       -> HsCmd (GhcPass p)
+mkHsCmdIf c a b = HsCmdIf noExt (Just noSyntaxExpr) c a b
 
 mkNPat lit neg     = NPat noExt lit neg noSyntaxExpr
 mkNPlusKPat id lit
@@ -645,16 +650,18 @@ typeToLHsType ty
   = go ty
   where
     go :: Type -> LHsType GhcPs
-    go ty@(FunTy arg _)
-      | isPredTy arg
-      , (theta, tau) <- tcSplitPhiTy ty
-      = noLoc (HsQualTy { hst_ctxt = noLoc (map go theta)
-                        , hst_xqual = noExt
-                        , hst_body = go tau })
-    go (FunTy arg res) = nlHsFunTy (go arg) (go res)
-    go ty@(ForAllTy {})
-      | (tvs, tau) <- tcSplitForAllTys ty
-      = noLoc (HsForAllTy { hst_bndrs = map go_tv tvs
+    go ty@(FunTy { ft_af = af, ft_arg = arg, ft_res = res })
+      = case af of
+          VisArg   -> nlHsFunTy (go arg) (go res)
+          InvisArg | (theta, tau) <- tcSplitPhiTy ty
+                   -> noLoc (HsQualTy { hst_ctxt = noLoc (map go theta)
+                                      , hst_xqual = noExt
+                                      , hst_body = go tau })
+
+    go ty@(ForAllTy (Bndr _ argf) _)
+      | (tvs, tau) <- tcSplitForAllTysSameVis argf ty
+      = noLoc (HsForAllTy { hst_fvf = argToForallVisFlag argf
+                          , hst_bndrs = map go_tv tvs
                           , hst_xforall = noExt
                           , hst_body = go tau })
     go (TyVarTy tv)         = nlHsTyVar (getRdrName tv)

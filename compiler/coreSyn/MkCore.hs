@@ -17,7 +17,7 @@ module MkCore (
         mkCharExpr, mkStringExpr, mkStringExprFS, mkStringExprFSWith,
 
         -- * Floats
-        FloatBind(..), wrapFloat,
+        FloatBind(..), wrapFloat, wrapFloats, floatBindings,
 
         -- * Constructing small tuples
         mkCoreVarTup, mkCoreVarTupTy, mkCoreTup, mkCoreUbxTup,
@@ -560,6 +560,19 @@ wrapFloat :: FloatBind -> CoreExpr -> CoreExpr
 wrapFloat (FloatLet defns)       body = Let defns body
 wrapFloat (FloatCase e b con bs) body = Case e b (exprType body) [(con, bs, body)]
 
+-- | Applies the floats from right to left. That is @wrapFloats [b1, b2, …, bn]
+-- u = let b1 in let b2 in … in let bn in u@
+wrapFloats :: [FloatBind] -> CoreExpr -> CoreExpr
+wrapFloats floats expr = foldr wrapFloat expr floats
+
+bindBindings :: CoreBind -> [Var]
+bindBindings (NonRec b _) = [b]
+bindBindings (Rec bnds) = map fst bnds
+
+floatBindings :: FloatBind -> [Var]
+floatBindings (FloatLet bnd) = bindBindings bnd
+floatBindings (FloatCase _ b _ bs) = b:bs
+
 {-
 ************************************************************************
 *                                                                      *
@@ -609,7 +622,7 @@ mkBuildExpr :: (MonadFail.MonadFail m, MonadThings m, MonadUnique m)
 mkBuildExpr elt_ty mk_build_inside = do
     [n_tyvar] <- newTyVars [alphaTyVar]
     let n_ty = mkTyVarTy n_tyvar
-        c_ty = mkFunTys [elt_ty, n_ty] n_ty
+        c_ty = mkVisFunTys [elt_ty, n_ty] n_ty
     [c, n] <- sequence [mkSysLocalM (fsLit "c") c_ty, mkSysLocalM (fsLit "n") n_ty]
 
     build_inside <- mk_build_inside (c, c_ty) (n, n_ty)
@@ -791,7 +804,7 @@ runtimeErrorTy :: Type
 -- forall (rr :: RuntimeRep) (a :: rr). Addr# -> a
 --   See Note [Error and friends have an "open-tyvar" forall]
 runtimeErrorTy = mkSpecForAllTys [runtimeRep1TyVar, openAlphaTyVar]
-                                 (mkFunTy addrPrimTy openAlphaTy)
+                                 (mkVisFunTy addrPrimTy openAlphaTy)
 
 {- Note [Error and friends have an "open-tyvar" forall]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -881,7 +894,7 @@ be relying on anything from it.
 aBSENT_ERROR_ID
  = mkVanillaGlobalWithInfo absentErrorName absent_ty arity_info
  where
-   absent_ty = mkSpecForAllTys [alphaTyVar] (mkFunTy addrPrimTy alphaTy)
+   absent_ty = mkSpecForAllTys [alphaTyVar] (mkVisFunTy addrPrimTy alphaTy)
    -- Not runtime-rep polymorphic. aBSENT_ERROR_ID is only used for
    -- lifted-type things; see Note [Absent errors] in WwLib
    arity_info = vanillaIdInfo `setArityInfo` 1

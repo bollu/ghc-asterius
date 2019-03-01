@@ -189,6 +189,28 @@ def ignore_stderr(name, opts):
 def combined_output( name, opts ):
     opts.combined_output = True
 
+def use_specs( specs ):
+    """
+    use_specs allows one to override files based on suffixes. e.g. 'stdout',
+    'stderr', 'asm', 'prof.sample', etc.
+
+    Example use_specs({'stdout' : 'prof002.stdout'}) to make the test re-use
+    prof002.stdout.
+
+    Full Example:
+    test('T5889', [only_ways(['normal']), req_profiling,
+                   extra_files(['T5889/A.hs', 'T5889/B.hs']),
+                   use_specs({'stdout' : 'prof002.stdout'})],
+         multimod_compile,
+         ['A B', '-O -prof -fno-prof-count-entries -v0'])
+
+    """
+    return lambda name, opts, s=specs: _use_specs( name, opts, s )
+
+def _use_specs( name, opts, specs ):
+    opts.extra_files.extend(specs.values ())
+    opts.use_specs = specs
+
 # -----
 
 def expect_fail_for( ways ):
@@ -1160,7 +1182,7 @@ def metric_dict(name, way, metric, value):
 # Returns a pass/fail object. Passes if the stats are withing the expected value ranges.
 # This prints the results for the user.
 def check_stats(name, way, stats_file, range_fields):
-    head_commit = Perf.commit_hash('HEAD')
+    head_commit = Perf.commit_hash('HEAD') if Perf.inside_git_repo() else None
     result = passed()
     if range_fields:
         try:
@@ -1183,7 +1205,8 @@ def check_stats(name, way, stats_file, range_fields):
                 change = None
 
                 # If this is the first time running the benchmark, then pass.
-                baseline = baseline_and_dev[0](way, head_commit)
+                baseline = baseline_and_dev[0](way, head_commit) \
+                    if Perf.inside_git_repo() else None
                 if baseline == None:
                     metric_result = passed()
                     change = MetricChange.NewMetric
@@ -1578,7 +1601,7 @@ def check_hp_ok(name):
                 if (gsResult == 0):
                     return (True)
                 else:
-                    print("hp2ps output for " + name + "is not valid PostScript")
+                    print("hp2ps output for " + name + " is not valid PostScript")
             else: return (True) # assume postscript is valid without ghostscript
         else:
             print("hp2ps did not generate PostScript for " + name)
@@ -2001,6 +2024,10 @@ def in_srcdir(name, suffix=''):
 #
 def find_expected_file(name, suff):
     basename = add_suffix(name, suff)
+    # Override the basename if the user has specified one, this will then be
+    # subjected to the same name mangling scheme as normal to allow platform
+    # specific overrides to work.
+    basename = getTestOpts().use_specs.get (suff, basename)
 
     files = [basename + ws + plat
              for plat in ['-' + config.platform, '-' + config.os, '']
@@ -2091,6 +2118,7 @@ def summary(t, file, short=False, color=False):
     if color:
         if len(t.unexpected_failures) > 0 or \
             len(t.unexpected_stat_failures) > 0 or \
+            len(t.unexpected_passes) > 0 or \
             len(t.framework_failures) > 0:
             colorize = str_fail
         else:

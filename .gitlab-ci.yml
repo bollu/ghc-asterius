@@ -54,13 +54,14 @@ ghc-linters:
 .validate-hadrian:
   allow_failure: true
   script:
+    - cabal update
     - git clean -xdf && git submodule foreach git clean -xdf
     - bash .circleci/prepare-system.sh
     - if [[ -d ./cabal-cache ]]; then cp -R ./.cabal-cache ~/.cabal-cache; fi
     - ./boot
     - ./configure $CONFIGURE_ARGS
     - hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh`
-    - hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` docs-haddock
+    - hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` --docs=no-sphinx docs
   cache:
     key: hadrian
     paths:
@@ -238,7 +239,7 @@ validate-x86_64-linux-deb9-debug:
   stage: build
   image: ghcci/x86_64-linux-deb9:0.2
   variables:
-    BUILD_FLAVOUR: devel2
+    BUILD_FLAVOUR: validate
     TEST_ENV: "x86_64-linux-deb9-debug"
   cache:
     key: linux-x86_64-deb9
@@ -276,24 +277,28 @@ validate-x86_64-linux-deb9-llvm:
   cache:
     key: linux-x86_64-deb9
 
-validate-x86_64-linux-deb8:
+release-x86_64-linux-deb8:
   extends: .validate-linux
   stage: full-build
   image: ghcci/x86_64-linux-deb8:0.1
   variables:
     TEST_ENV: "x86_64-linux-deb8"
+  only:
+    - tags
   cache:
     key: linux-x86_64-deb8
   artifacts:
     when: always
     expire_in: 2 week
 
-validate-x86_64-linux-fedora27:
+release-x86_64-linux-fedora27:
   extends: .validate-linux
   stage: full-build
   image: ghcci/x86_64-linux-fedora27:0.1
   variables:
     TEST_ENV: "x86_64-linux-fedora27"
+  only:
+    - tags
   cache:
     key: linux-x86_64-fedora27
   artifacts:
@@ -359,6 +364,8 @@ validate-x86_64-linux-deb9-unreg:
     - robocopy /np /nfl /ndl /e "%APPDATA%\cabal" cabal-cache
     - bash -c 'make clean || true'
   dependencies: []
+  variables:
+    FORCE_SYMLINKS: 1
   cache:
     paths:
       - cabal-cache
@@ -379,6 +386,7 @@ validate-x86_64-windows-hadrian:
       mkdir -p _build
       cp -R inplace/mingw _build/mingw
     - bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` --flavour=Quick"
+    - bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh -j`mk/detect-cpu-count.sh` --flavour=Quick --docs=no-sphinx docs
     # FIXME: Bindist disabled due to #16073
     #- bash -c "PATH=`pwd`/toolchain/bin:$PATH hadrian/build.cabal.sh binary-dist"
     # FIXME: Testsuite disabled due to #16156.

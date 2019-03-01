@@ -337,7 +337,7 @@ mkDictSelId name clas
     val_index      = assoc "MkId.mkDictSelId" (sel_names `zip` [0..]) name
 
     sel_ty = mkForAllTys tyvars $
-             mkFunTy (mkClassPred clas (mkTyVarTys (binderVars tyvars))) $
+             mkInvisFunTy (mkClassPred clas (mkTyVarTys (binderVars tyvars))) $
              getNth arg_tys val_index
 
     base_info = noCafIdInfo
@@ -409,8 +409,8 @@ dictSelRule :: Int -> Arity -> RuleFun
 --
 dictSelRule val_index n_ty_args _ id_unf _ args
   | (dict_arg : _) <- drop n_ty_args args
-  , Just (_, _, con_args) <- exprIsConApp_maybe id_unf dict_arg
-  = Just (getNth con_args val_index)
+  , Just (_, floats, _, _, con_args) <- exprIsConApp_maybe id_unf dict_arg
+  = Just (wrapFloats floats $ getNth con_args val_index)
   | otherwise
   = Nothing
 
@@ -596,7 +596,7 @@ mkDataConRep dflags fam_envs wrap_name mb_bangs data_con
                         | otherwise           = topDmd
 
              wrap_prag = alwaysInlinePragma `setInlinePragmaActivation`
-                         activeAfterInitial
+                         activeDuringFinal
                          -- See Note [Activation for data constructor wrappers]
 
              -- The wrapper will usually be inlined (see wrap_unf), so its
@@ -706,16 +706,24 @@ mkDataConRep dflags fam_envs wrap_name mb_bangs data_con
 
 {- Note [Activation for data constructor wrappers]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The Activation on a data constructor wrapper allows it to inline in
-Phase 2 and later (1, 0).  But not in the InitialPhase.  That gives
-rewrite rules a chance to fire (in the InitialPhase) if they mention
-a data constructor on the left
+The Activation on a data constructor wrapper allows it to inline only in Phase
+0. This way rules have a chance to fire if they mention a data constructor on
+the left
    RULE "foo"  f (K a b) = ...
 Since the LHS of rules are simplified with InitialPhase, we won't
 inline the wrapper on the LHS either.
 
-People have asked for this before, but now that even the InitialPhase
-does some inlining, it has become important.
+On the other hand, this means that exprIsConApp_maybe must be able to deal
+with wrappers so that case-of-constructor is not delayed; see
+Note [exprIsConApp_maybe on data constructors with wrappers] for details.
+
+It used to activate in phases 2 (afterInitial) and later, but it makes it
+awkward to write a RULE[1] with a constructor on the left: it would work if a
+constructor has no wrapper, but whether a constructor has a wrapper depends, for
+instance, on the order of type argument of that constructors. Therefore changing
+the order of type argument could make previously working RULEs fail.
+
+See also https://ghc.haskell.org/trac/ghc/ticket/15840 .
 
 
 Note [Bangs on imported data constructors]
@@ -1129,7 +1137,7 @@ mkPrimOpId prim_op
   = id
   where
     (tyvars,arg_tys,res_ty, arity, strict_sig) = primOpSig prim_op
-    ty   = mkSpecForAllTys tyvars (mkFunTys arg_tys res_ty)
+    ty   = mkSpecForAllTys tyvars (mkVisFunTys arg_tys res_ty)
     name = mkWiredInName gHC_PRIM (primOpOcc prim_op)
                          (mkPrimOpIdUnique (primOpTag prim_op))
                          (AnId id) UserSyntax
@@ -1289,7 +1297,7 @@ unsafeCoerceId
 
     [_, _, a, b] = mkTyVarTys bndrs
 
-    ty  = mkSpecForAllTys bndrs (mkFunTy a b)
+    ty  = mkSpecForAllTys bndrs (mkVisFunTy a b)
 
     [x] = mkTemplateLocals [a]
     rhs = mkLams (bndrs ++ [x]) $
@@ -1323,7 +1331,7 @@ seqId = pcMiscPrelId seqName ty info
                   -- see Note [seqId magic]
 
     ty  = mkSpecForAllTys [alphaTyVar,betaTyVar]
-                          (mkFunTy alphaTy (mkFunTy betaTy betaTy))
+                          (mkVisFunTy alphaTy (mkVisFunTy betaTy betaTy))
 
     [x,y] = mkTemplateLocals [alphaTy, betaTy]
     rhs = mkLams [alphaTyVar,betaTyVar,x,y] (Case (Var x) x betaTy [(DEFAULT, [], Var y)])
@@ -1333,13 +1341,13 @@ lazyId :: Id    -- See Note [lazyId magic]
 lazyId = pcMiscPrelId lazyIdName ty info
   where
     info = noCafIdInfo `setNeverLevPoly` ty
-    ty  = mkSpecForAllTys [alphaTyVar] (mkFunTy alphaTy alphaTy)
+    ty  = mkSpecForAllTys [alphaTyVar] (mkVisFunTy alphaTy alphaTy)
 
 noinlineId :: Id -- See Note [noinlineId magic]
 noinlineId = pcMiscPrelId noinlineIdName ty info
   where
     info = noCafIdInfo `setNeverLevPoly` ty
-    ty  = mkSpecForAllTys [alphaTyVar] (mkFunTy alphaTy alphaTy)
+    ty  = mkSpecForAllTys [alphaTyVar] (mkVisFunTy alphaTy alphaTy)
 
 oneShotId :: Id -- See Note [The oneShot function]
 oneShotId = pcMiscPrelId oneShotName ty info
@@ -1348,8 +1356,8 @@ oneShotId = pcMiscPrelId oneShotName ty info
                        `setUnfoldingInfo`  mkCompulsoryUnfolding rhs
     ty  = mkSpecForAllTys [ runtimeRep1TyVar, runtimeRep2TyVar
                           , openAlphaTyVar, openBetaTyVar ]
-                          (mkFunTy fun_ty fun_ty)
-    fun_ty = mkFunTy openAlphaTy openBetaTy
+                          (mkVisFunTy fun_ty fun_ty)
+    fun_ty = mkVisFunTy openAlphaTy openBetaTy
     [body, x] = mkTemplateLocals [fun_ty, openAlphaTy]
     x' = setOneShotLambda x  -- Here is the magic bit!
     rhs = mkLams [ runtimeRep1TyVar, runtimeRep2TyVar
@@ -1379,7 +1387,8 @@ coerceId = pcMiscPrelId coerceName ty info
                                            , liftedTypeKind
                                            , alphaTy, betaTy ]
     ty        = mkSpecForAllTys [alphaTyVar, betaTyVar] $
-                mkFunTys [eqRTy, alphaTy] betaTy
+                mkInvisFunTy eqRTy                      $
+                mkVisFunTy alphaTy betaTy
 
     [eqR,x,eq] = mkTemplateLocals [eqRTy, alphaTy, eqRPrimTy]
     rhs = mkLams [alphaTyVar, betaTyVar, eqR, x] $
