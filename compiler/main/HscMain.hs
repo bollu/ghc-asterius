@@ -80,6 +80,7 @@ module HscMain
     , ioMsgMaybe
     , showModuleIndex
     , hscAddSptEntries
+    , doCodeGen
     ) where
 
 import GhcPrelude
