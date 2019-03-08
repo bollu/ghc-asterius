@@ -10,7 +10,7 @@ module Settings.Default (
     defaultArgs,
 
     -- * Default build flavour
-    defaultFlavour, defaultSplitObjects
+    defaultFlavour
     ) where
 
 import qualified Hadrian.Builder.Ar
@@ -100,6 +100,7 @@ stage1Packages = do
              , ghcPkg
              , ghcPrim
              , haskeline
+             , hp2ps
              , hsc2hs
              , intLib
              , pretty
@@ -132,7 +133,7 @@ testsuitePackages = do
              , ghci
              , ghcCompact
              , ghcPkg
-             , hp2ps
+             , hpcBin
              , hsc2hs
              , iserv
              , runGhc
@@ -210,7 +211,6 @@ defaultFlavour = Flavour
     , integerLibrary     = (\x -> if x then integerSimple else integerGmp) <$> cmdIntegerSimple
     , libraryWays        = defaultLibraryWays
     , rtsWays            = defaultRtsWays
-    , splitObjects       = defaultSplitObjects
     , dynamicGhcPrograms = defaultDynamicGhcPrograms
     , ghciWithDebugger   = False
     , ghcProfiled        = False
@@ -227,16 +227,6 @@ defaultDynamicGhcPrograms = do
   win <- windowsHost
   supportsShared <- platformSupportsSharedLibs
   return (not win && supportsShared)
-
--- | Default condition for building split objects.
-defaultSplitObjects :: Predicate
-defaultSplitObjects = do
-    goodStage <- notStage0 -- We don't split bootstrap (stage 0) packages
-    pkg       <- getPackage
-    supported <- expr supportsSplitObjects
-    split     <- expr cmdSplitObjects
-    let goodPackage = isLibrary pkg && pkg /= compiler && pkg /= rts
-    return $ split && goodStage && goodPackage && supported
 
 -- | All 'Builder'-dependent command line arguments.
 defaultBuilderArgs :: Args
