@@ -26,7 +26,7 @@ module Util (
 
         mapFst, mapSnd, chkAppend,
         mapAndUnzip, mapAndUnzip3, mapAccumL2,
-        nOfThem, filterOut, partitionWith,
+        filterOut, partitionWith,
 
         dropWhileEndLE, spanEnd, last2, lastMaybe,
 
@@ -99,6 +99,7 @@ module Util (
         doesDirNameExist,
         getModificationUTCTime,
         modificationTimeIfExists,
+        withAtomicRename,
 
         global, consIORef, globalM,
         sharedGlobal, sharedGlobalM,
@@ -145,9 +146,10 @@ import GHC.Stack (HasCallStack)
 
 import Control.Applicative ( liftA2 )
 import Control.Monad    ( liftM, guard )
+import Control.Monad.IO.Class ( MonadIO, liftIO )
 import GHC.Conc.Sync ( sharedCAF )
 import System.IO.Error as IO ( isDoesNotExistError )
-import System.Directory ( doesDirectoryExist, getModificationTime )
+import System.Directory ( doesDirectoryExist, getModificationTime, renameFile )
 import System.FilePath
 
 import Data.Char        ( isUpper, isAlphaNum, isSpace, chr, ord, isDigit, toUpper
@@ -455,9 +457,6 @@ mapAccumL2 f s1 s2 xs = (s1', s2', ys)
   where ((s1', s2'), ys) = mapAccumL (\(s1, s2) x -> case f s1 s2 x of
                                                        (s1', s2', y) -> ((s1', s2'), y))
                                      (s1, s2) xs
-
-nOfThem :: Int -> a -> [a]
-nOfThem n thing = replicate n thing
 
 -- | @atLength atLen atEnd ls n@ unravels list @ls@ to position @n@. Precisely:
 --
@@ -1302,6 +1301,38 @@ modificationTimeIfExists f = do
         `catchIO` \e -> if isDoesNotExistError e
                         then return Nothing
                         else ioError e
+
+-- --------------------------------------------------------------
+-- atomic file writing by writing to a temporary file first (see #14533)
+--
+-- This should be used in all cases where GHC writes files to disk
+-- and uses their modification time to skip work later,
+-- as otherwise a partially written file (e.g. due to crash or Ctrl+C)
+-- also results in a skip.
+
+withAtomicRename :: (MonadIO m) => FilePath -> (FilePath -> m a) -> m a
+withAtomicRename targetFile f
+  | enableAtomicRename = do
+  -- The temp file must be on the same file system (mount) as the target file
+  -- to result in an atomic move on most platforms.
+  -- The standard way to ensure that is to place it into the same directory.
+  -- This can still be fooled when somebody mounts a different file system
+  -- at just the right time, but that is not a case we aim to cover here.
+  let temp = targetFile <.> "tmp"
+  res <- f temp
+  liftIO $ renameFile temp targetFile
+  return res
+
+  | otherwise = f targetFile
+  where
+    -- As described in #16450, enabling this causes spurious build failures due
+    -- to apparently missing files.
+    enableAtomicRename :: Bool
+#if defined(mingw32_BUILD_OS)
+    enableAtomicRename = False
+#else
+    enableAtomicRename = True
+#endif
 
 -- --------------------------------------------------------------
 -- split a string at the last character where 'pred' is True,

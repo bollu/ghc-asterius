@@ -352,7 +352,7 @@ Variables in type signatures are implicitly quantified
 when (1) they are in a type signature not beginning
 with "forall" or (2) in any qualified type T => R.
 We are phasing out (2) since it leads to inconsistencies
-(Trac #4426):
+(#4426):
 
 data A = A (a -> a)           is an error
 data A = A (Eq a => a -> a)   binds "a"
@@ -822,11 +822,7 @@ bindHsQTyVars doc mb_in_doc mb_assoc body_kv_occs hsq_bndrs thing_inside
                                  -- body kvs, as mandated by
                                  -- Note [Ordering of implicit variables]
              implicit_kvs = filter_occs bndrs kv_occs
-             -- dep_bndrs is the subset of bndrs that are dependent
-             --   i.e. appear in bndr/body_kv_occs
-             -- Can't use implicit_kvs because we've deleted bndrs from that!
-             dep_bndrs = filter (`elemRdr` kv_occs) bndrs
-             del       = deleteBys eqLocated
+             del          = deleteBys eqLocated
              all_bound_on_lhs = null ((body_kv_occs `del` bndrs) `del` bndr_kv_occs)
 
        ; traceRn "checkMixedVars3" $
@@ -841,10 +837,7 @@ bindHsQTyVars doc mb_in_doc mb_assoc body_kv_occs hsq_bndrs thing_inside
        ; bindLocalNamesFV implicit_kv_nms                     $
          bindLHsTyVarBndrs doc mb_in_doc mb_assoc hs_tv_bndrs $ \ rn_bndrs ->
     do { traceRn "bindHsQTyVars" (ppr hsq_bndrs $$ ppr implicit_kv_nms $$ ppr rn_bndrs)
-       ; dep_bndr_nms <- mapM (lookupLocalOccRn . unLoc) dep_bndrs
-       ; thing_inside (HsQTvs { hsq_ext = HsQTvsRn
-                                   { hsq_implicit  = implicit_kv_nms
-                                   , hsq_dependent = mkNameSet dep_bndr_nms }
+       ; thing_inside (HsQTvs { hsq_ext = implicit_kv_nms
                               , hsq_explicit  = rn_bndrs })
                       all_bound_on_lhs } }
 
@@ -878,9 +871,6 @@ Then:
                           of hs_tv_bndrs, and not bound by bndrs
 
 * We want to quantify add implicit bindings for implicit_kvs
-
-* The "dependent" bndrs (hsq_dependent) are the subset of
-  bndrs that are free in bndr_kv_occs or body_kv_occs
 
 * If implicit_body_kvs is non-empty, then there is a kind variable
   mentioned in the kind signature that is not bound "on the left".
@@ -1345,7 +1335,7 @@ checkSectionPrec direction section op arg
 
 -- | Look up the fixity for an operator name.  Be careful to use
 -- 'lookupFieldFixityRn' for (possibly ambiguous) record fields
--- (see Trac #13132).
+-- (see #13132).
 lookupFixityOp :: OpName -> RnM Fixity
 lookupFixityOp (NormalOp n)  = lookupFixityRn n
 lookupFixityOp NegateOp      = lookupFixityRn negateName

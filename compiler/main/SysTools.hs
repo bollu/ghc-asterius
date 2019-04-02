@@ -308,7 +308,7 @@ initSysTools top_dir
 
 {- Note [Windows stack usage]
 
-See: Trac #8870 (and #8834 for related info) and #12186
+See: #8870 (and #8834 for related info) and #12186
 
 On Windows, occasionally we need to grow the stack. In order to do
 this, we would normally just bump the stack pointer - but there's a
@@ -610,5 +610,5 @@ R_*_COPY relocations.
 Unregisterised compiler can't evade R_*_COPY relocations easily thus we disable
 -Bsymbolic linking there.
 
-See related Trac tickets: #4210, #15338
+See related tickets: #4210, #15338
 -}

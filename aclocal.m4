@@ -905,7 +905,7 @@ dnl 2. Find happy in path
 dnl 3. Check happy version
 dnl
 dnl If you increase the minimum version requirement, please also update:
-dnl https://ghc.haskell.org/trac/ghc/wiki/Building/Preparation/Tools
+dnl https://gitlab.haskell.org/ghc/ghc/wikis/building/preparation/tools
 dnl
 AC_DEFUN([FPTOOLS_HAPPY],
 [AC_PATH_PROG(HAPPY,[happy],)
@@ -938,7 +938,7 @@ dnl 2. Find alex in path
 dnl 3. Check alex version
 dnl
 dnl If you increase the minimum version requirement, please also update:
-dnl https://ghc.haskell.org/trac/ghc/wiki/Building/Preparation/Tools
+dnl https://gitlab.haskell.org/ghc/ghc/wikis/building/preparation/tools
 dnl
 AC_DEFUN([FPTOOLS_ALEX],
 [AC_PATH_PROG(ALEX,[alex],)
@@ -1483,7 +1483,7 @@ AC_SUBST([GhcPkgCmd])
 # to compile .hc code.
 #
 # -fwrapv is needed for gcc to emit well-behaved code in the presence of
-# integer wrap around. (Trac #952)
+# integer wrap around. (#952)
 #
 AC_DEFUN([FP_GCC_EXTRA_FLAGS],
 [AC_REQUIRE([FP_GCC_VERSION])

@@ -20,7 +20,7 @@ HsTypes: Abstract syntax: user-defined types
 module HsTypes (
         HsType(..), NewHsTypeX(..), LHsType, HsKind, LHsKind,
         HsTyVarBndr(..), LHsTyVarBndr, ForallVisFlag(..),
-        LHsQTyVars(..), HsQTvsRn(..),
+        LHsQTyVars(..),
         HsImplicitBndrs(..),
         HsWildCardBndrs(..),
         LHsSigType, LHsSigWcType, LHsWcType,
@@ -79,7 +79,6 @@ import HsLit () -- for instances
 import Id ( Id )
 import Name( Name )
 import RdrName ( RdrName )
-import NameSet ( NameSet, emptyNameSet )
 import DataCon( HsSrcBang(..), HsImplBang(..),
                 SrcStrictness(..), SrcUnpackedness(..) )
 import TysPrim( funTyConName )
@@ -214,7 +213,7 @@ Note carefully:
   Or even:
         f :: forall _a. _a -> _b
   Here _a is an ordinary forall'd binder, but (With NamedWildCards)
-  _b is a named wildcard.  (See the comments in Trac #10982)
+  _b is a named wildcard.  (See the comments in #10982)
 
 * Named wildcards are bound by the HsWildCardBndrs construct, which wraps
   types that are allowed to have wildcards. Unnamed wildcards however are left
@@ -322,21 +321,13 @@ data LHsQTyVars pass   -- See Note [HsType binders]
     }
   | XLHsQTyVars (XXLHsQTyVars pass)
 
-data HsQTvsRn
-  = HsQTvsRn
-           { hsq_implicit :: [Name]
-                -- Implicit (dependent) variables
+type HsQTvsRn = [Name]  -- Implicit variables
+  -- For example, in   data T (a :: k1 -> k2) = ...
+  -- the 'a' is explicit while 'k1', 'k2' are implicit
 
-           , hsq_dependent :: NameSet
-               -- Which members of hsq_explicit are dependent; that is,
-               -- mentioned in the kind of a later hsq_explicit,
-               -- or mentioned in a kind in the scope of this HsQTvs
-               -- See Note [Dependent LHsQTyVars] in TcHsType
-           } deriving Data
-
-type instance XHsQTvs       GhcPs = NoExt
-type instance XHsQTvs       GhcRn = HsQTvsRn
-type instance XHsQTvs       GhcTc = HsQTvsRn
+type instance XHsQTvs GhcPs = NoExt
+type instance XHsQTvs GhcRn = HsQTvsRn
+type instance XHsQTvs GhcTc = HsQTvsRn
 
 type instance XXLHsQTyVars  (GhcPass _) = NoExt
 
@@ -347,11 +338,12 @@ hsQTvExplicit :: LHsQTyVars pass -> [LHsTyVarBndr pass]
 hsQTvExplicit = hsq_explicit
 
 emptyLHsQTvs :: LHsQTyVars GhcRn
-emptyLHsQTvs = HsQTvs (HsQTvsRn [] emptyNameSet) []
+emptyLHsQTvs = HsQTvs { hsq_ext = [], hsq_explicit = [] }
 
 isEmptyLHsQTvs :: LHsQTyVars GhcRn -> Bool
-isEmptyLHsQTvs (HsQTvs (HsQTvsRn [] _) []) = True
-isEmptyLHsQTvs _                = False
+isEmptyLHsQTvs (HsQTvs { hsq_ext = imp, hsq_explicit = exp })
+  = null imp && null exp
+isEmptyLHsQTvs _ = False
 
 ------------------------------------------------
 --            HsImplicitBndrs
@@ -765,7 +757,7 @@ After renaming
 Qualified currently behaves exactly as Implicit,
 but it is deprecated to use it for implicit quantification.
 In this case, GHC 7.10 gives a warning; see
-Note [Context quantification] in RnTypes, and Trac #4426.
+Note [Context quantification] in RnTypes, and #4426.
 In GHC 8.0, Qualified will no longer bind variables
 and this will become an error.
 
@@ -997,7 +989,7 @@ hsExplicitLTyVarNames qtvs = map hsLTyVarName (hsQTvExplicit qtvs)
 
 hsAllLTyVarNames :: LHsQTyVars GhcRn -> [Name]
 -- All variables
-hsAllLTyVarNames (HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kvs }
+hsAllLTyVarNames (HsQTvs { hsq_ext = kvs
                          , hsq_explicit = tvs })
   = kvs ++ hsLTyVarNames tvs
 hsAllLTyVarNames (XLHsQTyVars _) = panic "hsAllLTyVarNames"
@@ -1073,7 +1065,7 @@ mkHsAppKindTy ext ty k
 -- Breaks up any parens in the result type:
 --      splitHsFunType (a -> (b -> c)) = ([a,b], c)
 -- Also deals with (->) t1 t2; that is why it only works on LHsType Name
---   (see Trac #9096)
+--   (see #9096)
 splitHsFunType :: LHsType GhcRn -> ([LHsType GhcRn], LHsType GhcRn)
 splitHsFunType (L _ (HsParTy _ ty))
   = splitHsFunType ty
@@ -1491,7 +1483,7 @@ pprConDeclFields fields = braces (sep (punctuate comma (map ppr_fld fields)))
 {-
 Note [Printing KindedTyVars]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Trac #3830 reminded me that we should really only print the kind
+#3830 reminded me that we should really only print the kind
 signature on a KindedTyVar if the kind signature was put there by the
 programmer.  During kind inference GHC now adds a PostTcKind to UserTyVars,
 rather than converting to KindedTyVars as before.

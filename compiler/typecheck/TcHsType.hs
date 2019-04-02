@@ -91,7 +91,7 @@ import ConLike
 import DataCon
 import Class
 import Name
-import NameSet
+-- import NameSet
 import VarEnv
 import TysWiredIn
 import BasicTypes
@@ -458,7 +458,7 @@ Consider this GHCi command
 We will only get the 'forall' if we /refrain/ from saturating those
 invisible binders. But generally we /do/ saturate those invisible
 binders (see tcInferApps), and we want to do so for nested application
-even in GHCi.  Consider for example (Trac #16287)
+even in GHCi.  Consider for example (#16287)
   ghci> type family F :: k
   ghci> data T :: (forall k. k) -> Type
   ghci> :kind T F
@@ -585,7 +585,7 @@ tc_infer_hs_type mode (HsKindSig _ ty sig)
                  -- We must typecheck the kind signature, and solve all
                  -- its equalities etc; from this point on we may do
                  -- things like instantiate its foralls, so it needs
-                 -- to be fully determined (Trac #14904)
+                 -- to be fully determined (#14904)
        ; traceTc "tc_infer_hs_type:sig" (ppr ty $$ ppr sig')
        ; ty' <- tc_lhs_type mode ty sig'
        ; return (ty', sig') }
@@ -721,7 +721,7 @@ tc_hs_type mode rn_ty@(HsTupleTy _ HsBoxedOrConstraintTuple hs_tys) exp_kind
        ; (tys, kinds) <- mapAndUnzipM (tc_infer_lhs_type mode) hs_tys
        ; kinds <- mapM zonkTcType kinds
            -- Infer each arg type separately, because errors can be
-           -- confusing if we give them a shared kind.  Eg Trac #7410
+           -- confusing if we give them a shared kind.  Eg #7410
            -- (Either Int, Int), we do not want to get an error saying
            -- "the second argument of a tuple should have kind *->*"
 
@@ -889,9 +889,9 @@ tupKindSort_maybe k
 tc_tuple :: HsType GhcRn -> TcTyMode -> TupleSort -> [LHsType GhcRn] -> TcKind -> TcM TcType
 tc_tuple rn_ty mode tup_sort tys exp_kind
   = do { arg_kinds <- case tup_sort of
-           BoxedTuple      -> return (nOfThem arity liftedTypeKind)
-           UnboxedTuple    -> mapM (\_ -> newOpenTypeKind) tys
-           ConstraintTuple -> return (nOfThem arity constraintKind)
+           BoxedTuple      -> return (replicate arity liftedTypeKind)
+           UnboxedTuple    -> replicateM arity newOpenTypeKind
+           ConstraintTuple -> return (replicate arity constraintKind)
        ; tau_tys <- zipWithM (tc_lhs_type mode) tys arg_kinds
        ; finish_tuple rn_ty tup_sort tau_tys arg_kinds exp_kind }
   where
@@ -1244,7 +1244,7 @@ a's kind, so we'll call matchExpectedFunKind, and unify
 At this point we must zonk the function type to expose the arrrow, so
 that (a Int) will satisfy (PKTI).
 
-The absence of this caused Trac #14174 and #14520.
+The absence of this caused #14174 and #14520.
 
 The calls to mkAppTyM is the other place we are very careful.
 
@@ -1427,7 +1427,7 @@ tcTyVar mode name         -- Could be a tyvar, a tycon, or a datacon
                    ; unless (data_kinds || specialPromotedDc dc) $
                        promotionErr name NoDataKindsDC
                    ; when (isFamInstTyCon (dataConTyCon dc)) $
-                       -- see Trac #15245
+                       -- see #15245
                        promotionErr name FamDataConPE
                    ; let (_, _, _, theta, _, _) = dataConFullSig dc
                    ; traceTc "tcTyVar" (ppr dc <+> ppr theta $$ ppr (dc_theta_illegal_constraint theta))
@@ -1460,7 +1460,7 @@ Note [GADT kind self-reference]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A promoted type cannot be used in the body of that type's declaration.
-Trac #11554 shows this example, which made GHC loop:
+#11554 shows this example, which made GHC loop:
 
   import Data.Kind
   data P (x :: k) = Q
@@ -1473,7 +1473,7 @@ TyConPE promotion error is given when tcTyVar checks an ATcTyCon in kind mode.
 Any ATcTyCon is a TyCon being defined in the current recursive group (see data
 type decl for TcTyThing), and all such TyCons are illegal in kinds.
 
-Trac #11962 proposes checking the head of a data declaration separately from
+#11962 proposes checking the head of a data declaration separately from
 its constructors. This would allow the example above to pass.
 
 Note [Body kind of a HsForAllTy]
@@ -1610,48 +1610,6 @@ addTypeCtxt (L _ ty) thing
                 Type-variable binders
 %*                                                                      *
 %************************************************************************
-
-Note [Dependent LHsQTyVars]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-We track (in the renamer) which explicitly bound variables in a
-LHsQTyVars are manifestly dependent; only precisely these variables
-may be used within the LHsQTyVars. We must do this so that kcLHsQTyVars
-can produce the right TyConBinders, and tell Anon vs. Required.
-
-Example   data T k1 (a:k1) (b:k2) c
-               = MkT (Proxy a) (Proxy b) (Proxy c)
-
-Here
-  (a:k1),(b:k2),(c:k3)
-       are Anon     (explicitly specified as a binder, not used
-                     in the kind of any other binder
-  k1   is Required  (explicitly specifed as a binder, but used
-                     in the kind of another binder i.e. dependently)
-  k2   is Specified (not explicitly bound, but used in the kind
-                     of another binder)
-  k3   in Inferred  (not lexically in scope at all, but inferred
-                     by kind inference)
-and
-  T :: forall {k3} k1. forall k3 -> k1 -> k2 -> k3 -> *
-
-See Note [VarBndrs, TyCoVarBinders, TyConBinders, and visibility]
-in TyCoRep.
-
-kcLHsQTyVars uses the hsq_dependent field to decide whether
-k1, a, b, c should be Required or Anon.
-
-Earlier, thought it would work simply to do a free-variable check
-during kcLHsQTyVars, but this is bogus, because there may be
-unsolved equalities about. And we don't want to eagerly solve the
-equalities, because we may get further information after
-kcLHsQTyVars is called.  (Recall that kcLHsQTyVars is called
-only from getInitialKind.)
-This is what implements the rule that all variables intended to be
-dependent must be manifestly so.
-
-Sidenote: It's quite possible that later, we'll consider (t -> s)
-as a degenerate case of some (pi (x :: t) -> s) and then this will
-all get more permissive.
 
 Note [Keeping scoped variables in order: Explicit]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1822,8 +1780,7 @@ kcLHsQTyVars_Cusk, kcLHsQTyVars_NonCusk
 
 ------------------------------
 kcLHsQTyVars_Cusk name flav
-              (HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kv_ns
-                                           , hsq_dependent = dep_names }
+              (HsQTvs { hsq_ext = kv_ns
                       , hsq_explicit = hs_tvs }) thing_inside
   -- CUSK case
   -- See note [Required, Specified, and Inferred for types] in TcTyClsDecls
@@ -1874,7 +1831,6 @@ kcLHsQTyVars_Cusk name flav
          vcat [ text "name" <+> ppr name
               , text "kv_ns" <+> ppr kv_ns
               , text "hs_tvs" <+> ppr hs_tvs
-              , text "dep_names" <+> ppr dep_names
               , text "scoped_kvs" <+> ppr scoped_kvs
               , text "tc_tvs" <+> ppr tc_tvs
               , text "res_kind" <+> ppr res_kind
@@ -1895,8 +1851,7 @@ kcLHsQTyVars_Cusk _ _ (XLHsQTyVars _) _ = panic "kcLHsQTyVars"
 
 ------------------------------
 kcLHsQTyVars_NonCusk name flav
-              (HsQTvs { hsq_ext = HsQTvsRn { hsq_implicit = kv_ns
-                                           , hsq_dependent = dep_names }
+              (HsQTvs { hsq_ext = kv_ns
                       , hsq_explicit = hs_tvs }) thing_inside
   -- Non_CUSK case
   -- See note [Required, Specified, and Inferred for types] in TcTyClsDecls
@@ -1913,22 +1868,26 @@ kcLHsQTyVars_NonCusk name flav
                -- might unify with kind vars in other types in a mutually
                -- recursive group.
                -- See Note [Inferring kinds for type declarations] in TcTyClsDecls
-             tc_binders = zipWith mk_tc_binder hs_tvs tc_tvs
+
+             tc_binders = mkAnonTyConBinders VisArg tc_tvs
                -- Also, note that tc_binders has the tyvars from only the
                -- user-written tyvarbinders. See S1 in Note [How TcTyCons work]
                -- in TcTyClsDecls
+               --
+               -- mkAnonTyConBinder: see Note [No polymorphic recursion]
 
              all_tv_prs = (kv_ns                `zip` scoped_kvs) ++
                           (hsLTyVarNames hs_tvs `zip` tc_tvs)
                -- NB: bindIplicitTKBndrs_Q_Tv makes /freshly-named/ unification
                --     variables, hence the need to zip here.  Ditto bindExplicit..
                -- See TcMType Note [Unification variables need fresh Names]
+
              tycon = mkTcTyCon name tc_binders res_kind all_tv_prs
                                False -- not yet generalised
                                flav
 
        ; traceTc "kcLHsQTyVars: not-cusk" $
-         vcat [ ppr name, ppr kv_ns, ppr hs_tvs, ppr dep_names
+         vcat [ ppr name, ppr kv_ns, ppr hs_tvs
               , ppr scoped_kvs
               , ppr tc_tvs, ppr (mkTyConKind tc_binders res_kind) ]
        ; return tycon }
@@ -1936,18 +1895,57 @@ kcLHsQTyVars_NonCusk name flav
     ctxt_kind | tcFlavourIsOpen flav = TheKind liftedTypeKind
               | otherwise            = AnyKind
 
-    mk_tc_binder :: LHsTyVarBndr GhcRn -> TyVar -> TyConBinder
-    -- See Note [Dependent LHsQTyVars]
-    mk_tc_binder hs_tv tv
-       | hsLTyVarName hs_tv `elemNameSet` dep_names
-       = mkNamedTyConBinder Required tv
-       | otherwise
-       = mkAnonTyConBinder VisArg tv
-
 kcLHsQTyVars_NonCusk _ _ (XLHsQTyVars _) _ = panic "kcLHsQTyVars"
 
 
-{- Note [Kind-checking tyvar binders for associated types]
+{- Note [No polymorphic recursion]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Should this kind-check?
+  data T ka (a::ka) b  = MkT (T Type           Int   Bool)
+                             (T (Type -> Type) Maybe Bool)
+
+Notice that T is used at two different kinds in its RHS.  No!
+This should not kind-check.  Polymorphic recursion is known to
+be a tough nut.
+
+Previously, we laboriously (with help from the renamer)
+tried to give T the polymoprhic kind
+   T :: forall ka -> ka -> kappa -> Type
+where kappa is a unification variable, even in the getInitialKinds
+phase (which is what kcLHsQTyVars_NonCusk is all about).  But
+that is dangerously fragile (see the ticket).
+
+Solution: make kcLHsQTyVars_NonCusk give T a straightforward
+monomorphic kind, with no quantification whatsoever. That's why
+we use mkAnonTyConBinder for all arguments when figuring out
+tc_binders.
+
+But notice that (#16322 comment:3)
+
+* The algorithm successfully kind-checks this declaration:
+    data T2 ka (a::ka) = MkT2 (T2 Type a)
+
+  Starting with (getInitialKinds)
+    T2 :: (kappa1 :: kappa2 :: *) -> (kappa3 :: kappa4 :: *) -> *
+  we get
+    kappa4 := kappa1   -- from the (a:ka) kind signature
+    kappa1 := Type     -- From application T2 Type
+
+  These constraints are soluble so generaliseTcTyCon gives
+    T2 :: forall (k::Type) -> k -> *
+
+  But now the /typechecking/ (aka desugaring, tcTyClDecl) phase
+  fails, because the call (T2 Type a) in the RHS is ill-kinded.
+
+  We'd really prefer all errors to show up in the kind checking
+  phase.
+
+* This algorithm still accepts (in all phases)
+     data T3 ka (a::ka) = forall b. MkT3 (T3 Type b)
+  although T3 is really polymorphic-recursive too.
+  Perhaps we should somehow reject that.
+
+Note [Kind-checking tyvar binders for associated types]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 When kind-checking the type-variable binders for associated
    data/newtype decls
@@ -2439,7 +2437,7 @@ And also see Note [Avoid name clashes for associated data types].
 For (b) suppose we have
    data T :: forall k. k -> forall k. k -> *
 where the two k's are identical even up to their uniques.  Surprisingly,
-this can happen: see Trac #14515.
+this can happen: see #14515.
 
 It's reasonably easy to solve all this; just run down the list with a
 substitution; hence the recursive 'go' function.  But it has to be
@@ -2481,7 +2479,7 @@ tcHsPartialSigType
          , TcType )           -- Tau part
 -- See Note [Recipe for checking a signature]
 tcHsPartialSigType ctxt sig_ty
-  | HsWC { hswc_ext  = sig_wcs,         hswc_body = ib_ty } <- sig_ty
+  | HsWC { hswc_ext  = sig_wcs, hswc_body = ib_ty } <- sig_ty
   , HsIB { hsib_ext = implicit_hs_tvs
          , hsib_body = hs_ty } <- ib_ty
   , (explicit_hs_tvs, L _ hs_ctxt, hs_tau) <- splitLHsSigmaTy hs_ty
@@ -2538,8 +2536,9 @@ tcHsPartialSigType _ (XHsWildCardBndrs _) = panic "tcHsPartialSigType"
 tcPartialContext :: HsContext GhcRn -> TcM (TcThetaType, Maybe TcType)
 tcPartialContext hs_theta
   | Just (hs_theta1, hs_ctxt_last) <- snocView hs_theta
-  , L _ wc@(HsWildCardTy _) <- ignoreParens hs_ctxt_last
-  = do { wc_tv_ty <- tcWildCardOcc wc constraintKind
+  , L wc_loc wc@(HsWildCardTy _) <- ignoreParens hs_ctxt_last
+  = do { wc_tv_ty <- setSrcSpan wc_loc $
+                     tcWildCardOcc wc constraintKind
        ; theta <- mapM tcLHsPredType hs_theta1
        ; return (theta, Just wc_tv_ty) }
   | otherwise
@@ -2566,7 +2565,7 @@ An annoying difficulty happens if there are more than 62 inferred
 constraints. Then we need to fill in the TcTyVar with (say) a 70-tuple.
 Where do we find the TyCon?  For good reasons we only have constraint
 tuples up to 62 (see Note [How tuples work] in TysWiredIn).  So how
-can we make a 70-tuple?  This was the root cause of Trac #14217.
+can we make a 70-tuple?  This was the root cause of #14217.
 
 It's incredibly tiresome, because we only need this type to fill
 in the hole, to communicate to the error reporting machinery.  Nothing
@@ -2614,7 +2613,7 @@ tcHsPatSigType ctxt sig_ty
             <- solveLocalEqualities "tcHsPatSigType" $
                  -- Always solve local equalities if possible,
                  -- else casts get in the way of deep skolemisation
-                 -- (Trac #16033)
+                 -- (#16033)
                tcWildCardBinders sig_wcs        $ \ wcs ->
                tcExtendNameTyVarEnv sig_tkv_prs $
                do { sig_ty <- tcHsOpenType hs_ty
@@ -2735,7 +2734,7 @@ Here
  * Finally, in '<blah>' we have the envt "b" :-> beta, "c" :-> gamma,
    so we return the pairs ("b" :-> beta, "c" :-> gamma) from tcHsPatSigType,
 
-Another example (Trac #13881):
+Another example (#13881):
    fl :: forall (l :: [a]). Sing l -> Sing l
    fl (SNil :: Sing (l :: [y])) = SNil
 When we reach the pattern signature, 'l' is in scope from the
@@ -2856,7 +2855,7 @@ tcLHsKindSig ctxt hs_kind
        -- No generalization, so we must promote
        ; kind <- zonkPromoteType kind
          -- This zonk is very important in the case of higher rank kinds
-         -- E.g. Trac #13879    f :: forall (p :: forall z (y::z). <blah>).
+         -- E.g. #13879    f :: forall (p :: forall z (y::z). <blah>).
          --                          <more blah>
          --      When instantiating p's kind at occurrences of p in <more blah>
          --      it's crucial that the kind we instantiate is fully zonked,
