@@ -3787,7 +3787,7 @@ Haskell 98 allows the programmer to add a deriving clause to a data type
 declaration, to generate a standard instance declaration for specified class.
 GHC extends this mechanism along several axes:
 
-* The derivation mechanism can be used separtely from the data type
+* The derivation mechanism can be used separately from the data type
   declaration, using the `standalone deriving mechanism
   <#stand-alone-deriving>`__.
 
@@ -10890,7 +10890,7 @@ We say that the type variables in ``f`` are *specified*, while those in
 a type variable in the source program, it is *specified*; if not, it is
 *inferred*.
 
-Thus rule applies in datatype declarations, too. For example, if we have
+This rule applies in datatype declarations, too. For example, if we have
 ``data Proxy a = Proxy`` (and :extension:`PolyKinds` is enabled), then
 ``a`` will be assigned kind ``k``, where ``k`` is a fresh kind variable.
 Because ``k`` was not written by the user, it will be unavailable for
